@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""watch-session [SESSION_ID] - read-only live view of an opencode session: thinking, replies, tool calls.
+
+Follows opencode-code.service's event stream (/api/event). Unlike watch-ornith it attaches no TUI, so it can't
+change where the session's tools run. No SESSION_ID = every session, each line prefixed with its id tail.
+Run as root (reads coder's service.json for the password; it is used in-process only, never printed).
+"""
+import base64, json, sys, time, urllib.request
+
+SID = sys.argv[1] if len(sys.argv) > 1 else None
+CFG = "/home/coder/.config/opencode/service.json"
+DIM, CYAN, GREEN, RED, YEL, BOLD, RST = "\033[2m", "\033[36m", "\033[32m", "\033[31m", "\033[33m", "\033[1m", "\033[0m"
+
+state = {"col": 0, "mode": None, "r_chars": 0, "r_t0": 0.0, "step_t0": 0.0, "tools": {}}
+
+
+def out(s):
+    sys.stdout.write(s)
+    sys.stdout.flush()
+    state["col"] = 0 if s.endswith("\n") else state["col"] + len(s)
+
+
+def nl():
+    if state["col"]:
+        out("\n")
+
+
+def end_mode():
+    if state["mode"] == "think":
+        dt = time.time() - state["r_t0"]
+        nl()
+        out(f"{DIM}  ({state['r_chars']:,} chars of thinking, {dt:.0f}s){RST}\n")
+    elif state["mode"] == "text":
+        nl()
+    state["mode"] = None
+
+
+def short(inp):
+    if not isinstance(inp, dict):
+        return str(inp)[:160]
+    for k in ("command", "path", "filePath", "pattern", "url", "query"):
+        if k in inp:
+            return str(inp[k]).replace("\n", " ")[:160]
+    return json.dumps(inp)[:160]
+
+
+def handle(ev):
+    t = ev.get("type", "")
+    d = ev.get("data") or {}
+    sid = d.get("sessionID")
+    if not t.startswith(("session.", "form.", "permission.")) or (SID and sid and sid != SID):
+        return
+    tag = "" if SID else f"{DIM}[{(sid or '?')[-6:]}]{RST} "
+    now = time.strftime("%H:%M:%S")
+    if t == "session.step.started":
+        end_mode()
+        state["step_t0"] = time.time()
+        m = (d.get("model") or {}).get("id", "?")
+        out(f"\n{tag}{BOLD}── step · {m} · {now} ──{RST}\n")
+    elif t == "session.reasoning.started":
+        end_mode()
+        state.update(mode="think", r_chars=0, r_t0=time.time())
+        out(f"{tag}{DIM}thinking: ")
+    elif t == "session.reasoning.delta":
+        if state["mode"] != "think":
+            end_mode()
+            state.update(mode="think", r_chars=0, r_t0=time.time())
+            out(f"{tag}{DIM}thinking: ")
+        s = d.get("delta", "")
+        state["r_chars"] += len(s)
+        out(f"{DIM}{s}{RST}")
+    elif t == "session.reasoning.ended":
+        end_mode()
+    elif t in ("session.text.delta", "session.content.delta", "session.message.delta"):
+        if state["mode"] != "text":
+            end_mode()
+            state["mode"] = "text"
+            out(f"{tag}")
+        out(d.get("delta", ""))
+    elif t == "session.text.ended":
+        end_mode()
+    elif t == "session.tool.input.started":
+        end_mode()
+        state["tools"][d.get("id")] = d.get("name", "?")
+    elif t == "session.tool.called":
+        end_mode()
+        name = state["tools"].get(d.get("id"), "tool")
+        out(f"{tag}{CYAN}▶ {name}{RST} {short(d.get('input'))}\n")
+    elif t in ("session.tool.success", "session.tool.failed", "session.tool.error"):
+        name = state["tools"].pop(d.get("id"), "tool")
+        c = d.get("content")
+        n = len(c) if isinstance(c, str) else len(json.dumps(c or ""))
+        ok = t.endswith("success")
+        out(f"{tag}{GREEN if ok else RED}{'✓' if ok else '✗'} {name}{RST}{DIM} ({n:,} chars back){RST}\n")
+    elif t == "session.step.ended":
+        end_mode()
+        tok = d.get("tokens") or {}
+        cache = (tok.get("cache") or {}).get("read", 0)
+        dt = time.time() - state["step_t0"] if state["step_t0"] else 0
+        out(f"{tag}{DIM}   step done: {d.get('finish')} · {dt:.0f}s · prompt {tok.get('input', 0):,} new + {cache:,} cached · wrote {tok.get('output', 0):,}{RST}\n")
+    elif t.startswith("session.execution."):
+        end_mode()
+        out(f"\n{tag}{BOLD}{YEL}══ run {t.split('.')[-1]} · {now} ══{RST}\n")
+    elif t.startswith("form.") and t.endswith("created"):
+        end_mode()
+        out(f"{tag}{YEL}? opencode is asking you something (answer in Open WebUI){RST}\n")
+    elif t.startswith("permission.") and t.endswith(("created", "asked")):
+        end_mode()
+        out(f"{tag}{YEL}! opencode wants approval for something (answer in Open WebUI){RST}\n")
+    elif t in ("session.step.failed", "session.error"):
+        end_mode()
+        out(f"{tag}{RED}step failed: {json.dumps(d)[:200]}{RST}\n")
+
+
+def main():
+    cfg = json.load(open(CFG))
+    auth = "Basic " + base64.b64encode(("opencode:" + cfg["password"]).encode()).decode()
+    url = "http://127.0.0.1:%s/api/event" % cfg.get("port", 4096)
+    out(f"{BOLD}watching {SID or 'all sessions'}{RST}{DIM} - live thinking, replies and tool calls (Ctrl+C to close){RST}\n")
+    while True:
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": auth, "Accept": "text/event-stream"})
+            with urllib.request.urlopen(req, timeout=600) as r:
+                for raw in r:
+                    line = raw.decode(errors="replace").strip()
+                    if line.startswith("data:"):
+                        try:
+                            handle(json.loads(line[5:]))
+                        except ValueError:
+                            pass
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            end_mode()
+            out(f"{DIM}(stream dropped: {type(e).__name__}; reconnecting){RST}\n")
+            time.sleep(3)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(RST)

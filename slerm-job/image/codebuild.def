@@ -1,0 +1,35 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# Build environment for Code mode jobs on slerm. Same OS and toolchain as the AI-Sandbox VM 129
+# (Ubuntu 24.04, gcc 13, Python 3.12, Node 18.19 from Ubuntu, Rust stable + 1.92.0), so what builds
+# here runs there. Built as root on deadlock:  apptainer build codebuild-<date>.sif codebuild.def
+# then copied to /apps/codebuild/ and pointed at by codebuild.sif.
+
+%labels
+    org.slerm.purpose Code mode build jobs (slerm-job)
+
+%post
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential git ca-certificates curl wget xz-utils zstd unzip zip file patch rsync less \
+        pkg-config cmake ninja-build autoconf automake libtool \
+        python3 python3-pip python3-venv python3-dev \
+        nodejs npm \
+        libssl-dev zlib1g-dev libsqlite3-dev libffi-dev libbz2-dev liblzma-dev libreadline-dev \
+        libxml2-dev libyaml-dev libcurl4-openssl-dev
+    export RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
+    curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
+    /opt/rust/cargo/bin/rustup component add clippy rustfmt
+    /opt/rust/cargo/bin/rustup toolchain install 1.92.0 --profile minimal
+    chmod -R a+rX /opt/rust
+    mkdir -p /work /cache /job /out /opt/slerm-job
+    apt-get clean
+    rm -rf /var/lib/apt/lists/* /root/.cache
+
+%environment
+    export RUSTUP_HOME=/opt/rust/rustup
+    export PATH=/opt/rust/cargo/bin:$PATH
+    export LANG=C.UTF-8

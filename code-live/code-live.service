@@ -1,0 +1,23 @@
+[Unit]
+Description=code-live.py - read-only live window onto Code chat turns (embedded in Open WebUI replies)
+After=network.target opencode-code.service
+
+[Service]
+Type=simple
+User=coder
+Group=coder
+EnvironmentFile=/etc/code-mode/preview.env
+Environment=LIVE_PORT=4099
+ExecStart=/usr/bin/python3 /home/coder/.local/lib/code-mode/code-live.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# Feature #31: the Upload button's files go into <project>/uploads/ (code-live keeps every path under uploads/)
+ReadWritePaths=-/home/coder/projects/chats -/home/coder/projects/features
+PrivateTmp=yes
+MemoryMax=192M
+
+[Install]
+WantedBy=multi-user.target

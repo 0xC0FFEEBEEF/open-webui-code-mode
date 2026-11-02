@@ -1,0 +1,1350 @@
+#!/usr/bin/env python3
+"""desktop -- let a coding agent test web apps on a real desktop.
+
+One file, Python 3.12 standard library only. Talks to the Code Mode desktop
+API (POST /api/observe, POST /api/act, POST /api/caption, GET /health).
+"""
+
+import argparse
+import base64
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# ---- constants -----------------------------------------------------------
+DEFAULT_API = "http://127.0.0.1:6080"
+ENV_FILE = "/etc/code-mode/desktop.env"
+
+OBSERVE_TIMEOUT = 90      # seconds; first request for a new session is slow
+ACT_TIMEOUT = 90
+HEALTH_TIMEOUT = 10
+
+POLL_ENV = "DESKTOP_POLL"
+MAX_WAIT_ENV = "DESKTOP_WAIT_MAX"
+ENV_FILE_ENV = "DESKTOP_ENV_FILE"
+
+DEFAULT_POLL = 2.0
+DEFAULT_MAX_WAIT = 300.0
+
+SESSION_MAX = 64
+SHOW_LIMIT = 60
+TEXT_LIMIT = 2000
+ELEMENT_TEXT_LIMIT = 80
+UPLOAD_MAX_BYTES = 50 * 2**20   # all files of one upload together (the desktop API's limit too)
+UPLOAD_TIMEOUT = 120
+
+SAFE_PREFIX = "/home/coder/projects/chats/"
+FEATURES_PREFIX = "/home/coder/projects/features/"
+
+# Exit codes
+EXIT_OK = 0
+EXIT_API = 1
+EXIT_BAD = 2
+EXIT_USERCONTROL = 3
+EXIT_VERIFY_FAIL = 4
+
+
+class ApiError(Exception):
+    """A connection-level failure (not an HTTP error response)."""
+
+
+# ---- credentials ---------------------------------------------------------
+def _read_env_file(path):
+    data = {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip()
+                if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
+                    val = val[1:-1]
+                data[key] = val
+    except OSError:
+        pass
+    return data
+
+
+def load_credentials():
+    """Return (api_base, token). Never prints the token."""
+    api = os.environ.get("DESKTOP_API")
+    token = os.environ.get("CONTROL_TOKEN")
+    env_file = os.environ.get(ENV_FILE_ENV, ENV_FILE)
+    if not api or not token:
+        filevars = _read_env_file(env_file)
+        api = api or filevars.get("DESKTOP_API") or DEFAULT_API
+        token = token or filevars.get("CONTROL_TOKEN")
+    if not token:
+        print("desktop: no control token found; set CONTROL_TOKEN or add it "
+              "to %s" % ENV_FILE, file=sys.stderr)
+        sys.exit(EXIT_API)
+    return api, token
+
+
+# ---- session selection ---------------------------------------------------
+def _sanitize(name):
+    name = re.sub(r"[^A-Za-z0-9_-]", "", name)
+    return name[:SESSION_MAX]
+
+
+def _git_root(start):
+    d = os.path.abspath(start)
+    while True:
+        if os.path.isdir(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def resolve_session():
+    """Work out which desktop session to use, then validate it."""
+    if "CODE_DESKTOP" in os.environ:
+        raw = os.environ["CODE_DESKTOP"]
+    else:
+        cwd = os.path.abspath(os.getcwd())
+        if cwd.startswith(SAFE_PREFIX):
+            raw = cwd[len(SAFE_PREFIX):].split("/")[0]
+        elif cwd.startswith(FEATURES_PREFIX):
+            raw = cwd[len(FEATURES_PREFIX):].split("/")[0]
+        else:
+            root = _git_root(cwd) or cwd
+            raw = "code-" + os.path.basename(root.rstrip("/"))
+    name = _sanitize(raw)
+    if not name or name == "default":
+        print("desktop: refusing to use desktop session %r "
+              "(it is the empty string or 'default')" % (name or "<empty>"),
+              file=sys.stderr)
+        sys.exit(EXIT_BAD)
+    return name
+
+
+# ---- HTTP ----------------------------------------------------------------
+def _request(api, session, method, path, body=None, token=None, timeout=None):
+    url = "%s%s?%s" % (api, path, urllib.parse.urlencode({"s": session}))
+    headers = {"Content-Type": "application/json"}
+    if token is not None:
+        headers["Authorization"] = "Bearer %s" % token
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = resp.status
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        status = e.code
+        raw = e.read()
+    except urllib.error.URLError as e:
+        raise ApiError("cannot reach desktop API at %s: %s" % (url, e.reason))
+    except (TimeoutError, OSError) as e:
+        raise ApiError(str(e))
+    try:
+        parsed = json.loads(raw.decode("utf-8")) if raw.strip() else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    return status, parsed
+
+
+def _error_detail(body):
+    """Extract human-readable error text from a server error response.
+
+    The desktop API answers errors as {"error": "..."} while FastAPI answers
+    as {"detail": "..."}; prefer "detail", fall back to "error".
+    """
+    if isinstance(body, dict):
+        if body.get("detail"):
+            return str(body["detail"])
+        if body.get("error"):
+            return str(body["error"])
+    return ""
+
+
+def _http_message(verb, status, body):
+    """Build an error message for a non-200 response, including the server's reason."""
+    msg = "%s: HTTP %s" % (verb, status)
+    detail = _error_detail(body)
+    if detail:
+        msg += " (%s)" % detail
+    return msg
+
+
+def _float_env(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _int_env(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def caption(api, session, text, busy, token):
+    """Show a caption in the user's live viewer. Ignore failures."""
+    try:
+        _request(api, session, "POST", "/api/caption",
+                 body={"text": text, "busy": busy}, token=token,
+                 timeout=HEALTH_TIMEOUT)
+    except ApiError:
+        pass
+
+
+def health_user_control(api, session):
+    try:
+        _, body = _request(api, session, "GET", "/health", token=None,
+                           timeout=HEALTH_TIMEOUT)
+    except ApiError:
+        return False
+    return bool(body.get("user_control", False))
+
+
+def wait_for_handback(api, session):
+    """Wait for the user to release the desktop. Returns True if released."""
+    print("The user has control of the desktop; waiting for them to hand it "
+          "back...")
+    poll = _float_env(POLL_ENV, DEFAULT_POLL)
+    max_wait = _float_env(MAX_WAIT_ENV, DEFAULT_MAX_WAIT)
+    start = time.monotonic()
+    while time.monotonic() - start < max_wait:
+        time.sleep(poll)
+        if not health_user_control(api, session):
+            return True
+    return False
+
+
+def observe(api, session, token, marks=False):
+    body = {"marks": marks}
+    if not marks:
+        body["max_width"] = 320
+    status, data = _request(api, session, "POST", "/api/observe", body=body,
+                            token=token, timeout=OBSERVE_TIMEOUT)
+    if status != 200:
+        raise ApiError(_http_message("observe", status, data))
+    return data
+
+
+# ---- output --------------------------------------------------------------
+def _plural(n, word):
+    return "%d %s%s" % (n, word, "" if n == 1 else "s")
+
+
+def problems_line(data):
+    """One line on what the page did wrong since it loaded (the desktop API records it per tab): uncaught
+    JavaScript errors, console errors and failed requests - what page text and screenshots can't show."""
+    d = data.get("diag")
+    if d is None:
+        if data.get("watching") is False:
+            return "Page problems: unknown (the desktop is not recording this tab)"
+        return "Page problems: none recorded" if data.get("watching") else ""
+    c = d.get("counts") or {}
+    parts = []
+    if c.get("errors"):
+        parts.append(_plural(c["errors"], "JavaScript error"))
+    if c.get("console_errors"):
+        parts.append(_plural(c["console_errors"], "console error"))
+    if c.get("failed"):
+        parts.append(_plural(c["failed"], "failed request"))
+    if not parts:
+        return "Page problems since it loaded: none (no JavaScript errors, console errors or failed requests)"
+    lines = ["Page problems since it loaded: %s. Run `desktop errors` for details." % ", ".join(parts)]
+    lines += ["  - %s" % f for f in (d.get("first") or [])[:3]]
+    return "\n".join(lines)
+
+
+def print_page(session, data):
+    print("Desktop session: %s" % session)
+    url = data.get("url")
+    title = data.get("title") or ""
+    if url:
+        print("Page: %s — %s" % (title, url))
+    else:
+        print("Page: (no page open)")
+    tabs = data.get("tabs") or []
+    print("Tabs open: %d" % len(tabs))
+    line = problems_line(data) if url else ""
+    if line:
+        print(line)
+    if data.get("file_dialog"):
+        print("Chrome's file picker is open. You can't use it (it is not part of the page): attach files with "
+              "`desktop upload N FILE`, which closes it.")
+    print()
+    print("Page text:")
+    text = data.get("text") or ""
+    if text.strip():
+        print(text[:TEXT_LIMIT])
+    else:
+        print("(none)")
+    print()
+    print("Clickable elements (number, kind, text):")
+    shown = 0
+    extra = 0
+    for el in data.get("elements") or []:
+        if el.get("tag") == "drawn":
+            continue
+        if shown >= SHOW_LIMIT:
+            extra += 1
+            continue
+        kind = el.get("tag", "")
+        role = el.get("role", "")
+        if role:
+            kind = "%s/%s" % (kind, role)
+        label = (el.get("text", "") or "")[:ELEMENT_TEXT_LIMIT]
+        print("[%d] %s \"%s\"" % (el.get("id"), kind, label))
+        shown += 1
+    if extra:
+        print("(+%d more further down; scroll to reach them)" % extra)
+    if any(el.get("tag") == "input[file]" for el in data.get("elements") or []):
+        print("To attach a file, run `desktop upload N FILE`; clicking a file input opens a picker you can't use.")
+
+
+# ---- actions -------------------------------------------------------------
+def build_action(args):
+    """Return (action_dict, caption_description) for an acting command."""
+    if args.command == "open":
+        if args.new_tab:
+            return {"action": "new_tab", "url": args.url}, "open URL"
+        return {"action": "navigate", "url": args.url}, "open URL"
+    if args.command == "click":
+        return {"action": "click", "id": args.n}, "click element %d" % args.n
+    if args.command == "type":
+        act = {"action": "type", "text": args.text,
+               "enter": bool(args.enter), "clear": not args.no_clear}
+        if args.n is not None:
+            act["id"] = args.n
+        return act, "type text"
+    if args.command == "key":
+        return {"action": "key", "keys": args.keys}, "press keys"
+    if args.command == "scroll":
+        return {"action": "scroll", "direction": args.direction,
+                "amount": args.amount}, "scroll %s" % args.direction
+    if args.command == "back":
+        return {"action": "back"}, "go back"
+    if args.command == "wait":
+        secs = args.seconds if args.seconds is not None else 1
+        if secs < 0:
+            secs = 0
+        if secs > 10:
+            secs = 10
+        return {"action": "wait", "seconds": secs}, "wait"
+    if args.command == "hover":
+        if args.xy is not None:
+            return {"action": "hover", "x": args.xy[0], "y": args.xy[1]}, \
+                   "hover position (%d, %d)" % (args.xy[0], args.xy[1])
+        return {"action": "hover", "id": args.n}, "hover element %d" % args.n
+    raise AssertionError("not an acting command: %r" % args.command)
+
+
+def do_act(api, session, token, action, desc):
+    # Before acting, wait out any user control.
+    if health_user_control(api, session):
+        if not wait_for_handback(api, session):
+            return EXIT_USERCONTROL
+    caption(api, session, "opencode: " + desc, True, token)
+    try:
+        status, data = _request(api, session, "POST", "/api/act", body=action,
+                                token=token, timeout=ACT_TIMEOUT)
+    except ApiError as e:
+        caption(api, session, "", False, token)
+        print("desktop: %s" % e, file=sys.stderr)
+        return EXIT_API
+    caption(api, session, "", False, token)
+    if status == 409:
+        if not wait_for_handback(api, session):
+            return EXIT_USERCONTROL
+        caption(api, session, "opencode: " + desc, True, token)
+        try:
+            status, data = _request(api, session, "POST", "/api/act",
+                                    body=action, token=token,
+                                    timeout=ACT_TIMEOUT)
+        except ApiError as e:
+            caption(api, session, "", False, token)
+            print("desktop: %s" % e, file=sys.stderr)
+            return EXIT_API
+        caption(api, session, "", False, token)
+        if status == 409:
+            return EXIT_USERCONTROL
+    if status == 400 or not isinstance(data, dict) or not data.get("ok", False):
+        detail = _error_detail(data) or "action rejected"
+        print("desktop: %s" % detail)
+        print("run `desktop look` to see the current page")
+        return EXIT_API
+    data2 = observe(api, session, token)
+    print_page(session, data2)
+    return EXIT_OK
+
+
+# ---- commands ------------------------------------------------------------
+def cmd_upload(api, session, token, items):
+    """`desktop upload [N] FILE...`: send the files to the desktop, which attaches them to the page's file input
+    (the one at element N, or the page's only one) without Chrome's file picker. The desktop's browser can't read
+    this machine's files, so their contents travel with the request."""
+    ident = None
+    if len(items) > 1 and items[0].isdigit() and not os.path.exists(items[0]):
+        ident, items = int(items[0]), items[1:]
+    files, total = [], 0
+    for path in items:
+        full = os.path.expanduser(path)
+        if not os.path.isfile(full):
+            print("desktop: no such file: %s" % path, file=sys.stderr)
+            return EXIT_BAD
+        try:
+            with open(full, "rb") as fh:
+                data = fh.read()
+        except OSError as e:
+            print("desktop: cannot read %s: %s" % (path, e.strerror or e), file=sys.stderr)
+            return EXIT_BAD
+        total += len(data)
+        if total > UPLOAD_MAX_BYTES:
+            print("desktop: the files add up to more than %d MB" % (UPLOAD_MAX_BYTES >> 20), file=sys.stderr)
+            return EXIT_BAD
+        files.append({"name": os.path.basename(full), "data": base64.b64encode(data).decode("ascii")})
+    if len(files) > 20:
+        print("desktop: at most 20 files at a time", file=sys.stderr)
+        return EXIT_BAD
+    body = {"files": files}
+    if ident is not None:
+        body["id"] = ident
+    names = ", ".join(f["name"] for f in files)
+    if health_user_control(api, session):
+        if not wait_for_handback(api, session):
+            return EXIT_USERCONTROL
+    for attempt in (1, 2):
+        caption(api, session, "opencode: attach " + names, True, token)
+        try:
+            status, data = _request(api, session, "POST", "/api/upload", body=body, token=token,
+                                    timeout=UPLOAD_TIMEOUT)
+        finally:
+            caption(api, session, "", False, token)
+        if status != 409:
+            break
+        if attempt == 2 or not wait_for_handback(api, session):
+            return EXIT_USERCONTROL
+    if status == 404 and not (isinstance(data, dict) and "error" in data):   # an API from before uploads
+        print("desktop: this desktop API has no upload yet (it needs updating)", file=sys.stderr)
+        return EXIT_API
+    if status != 200 or not isinstance(data, dict) or not data.get("ok"):
+        print("desktop: upload failed: %s" % (_error_detail(data) or "rejected (HTTP %d)" % status))
+        print("run `desktop look` to see the current page")
+        return EXIT_API
+    if data.get("closed_dialogs"):
+        print("Closed the file picker that was open.")
+    inp = data.get("input") or {}
+    where = inp.get("label") or "the file input"
+    print("Attached to %s: %s" % (where, ", ".join(data.get("attached") or []) or "(nothing)"))
+    if data.get("left_out"):
+        print("Left out (that input takes one file): %s" % ", ".join(data["left_out"]))
+    if inp.get("accept"):
+        print("The input accepts: %s" % inp["accept"])
+    print()
+    print_page(session, observe(api, session, token))
+    return EXIT_OK
+
+
+def cmd_look(api, session, token):
+    print_page(session, observe(api, session, token))
+    return EXIT_OK
+
+
+def cmd_screenshot(api, session, token, outfile):
+    status, data = _request(api, session, "POST", "/api/observe",
+                            body={"marks": True}, token=token,
+                            timeout=OBSERVE_TIMEOUT)
+    if status != 200:
+        print("desktop: %s" % _http_message("screenshot", status, data),
+              file=sys.stderr)
+        return EXIT_API
+    raw = data.get("screenshot", "")
+    try:
+        png = base64.b64decode(raw)
+    except (ValueError, TypeError):
+        print("desktop: could not decode screenshot from server",
+              file=sys.stderr)
+        return EXIT_API
+    with open(outfile, "wb") as fh:
+        fh.write(png)
+    return EXIT_OK
+
+
+def cmd_status(api, session, token):
+    print("Desktop session: %s" % session)
+    print("User control: %s" % ("true" if health_user_control(api, session)
+                                else "false"))
+    return EXIT_OK
+
+
+def cmd_done(api, session, token):
+    """Park (shut down) this session's desktop to free memory."""
+    status, data = _request(api, session, "POST", "/api/park", body=None,
+                            token=token, timeout=ACT_TIMEOUT)
+    if status == 200:
+        print("Desktop %s shut down." % session)
+        return EXIT_OK
+    if status == 404:
+        print("No desktop running for %s." % session)
+        return EXIT_OK
+    print("desktop: %s" % _http_message("done", status, data), file=sys.stderr)
+    return EXIT_API
+
+
+# ---- vision model (``see`` and ``delegate``) -----------------------------
+# Coding models that cannot view images use these to let a vision model look at
+# the desktop for them. We never open screenshot files; we work only from the
+# JSON the desktop API returns.
+
+VISION_API_ENV = "VISION_API"
+VISION_MODEL_ENV = "VISION_MODEL"
+DELEGATE_STEPS_ENV = "DESKTOP_DELEGATE_STEPS"
+DEFAULT_VISION_API = "http://slerm-head:8090/v1"
+DEFAULT_VISION_MODEL = "holo4-35b-a3b"
+
+VISION_LOAD_TIMEOUT = 900     # first request: the model may need to be loaded first
+VISION_TIMEOUT = 180          # later requests
+SCREENSHOT_MAX_WIDTH = 1280
+PAGE_TEXT_LIMIT = 1500
+
+DELEGATE_DEFAULT_STEPS = 25
+DELEGATE_BAD_LIMIT = 3        # consecutive unparseable replies -> stop
+DELEGATE_REPEAT_LIMIT = 3     # identical action this many times in a row -> refuse
+
+DELEGATE_SYSTEM_PROMPT = """You drive a web browser to complete a task for a person who cannot see the screen.
+The screen shows Chrome. Each turn you get a screenshot where clickable page elements are boxed and numbered, plus
+the page text and a numbered list of the elements. Prefer an element's number. When you must use a position, give it
+on a 0-1000 scale (x=0 the left edge, x=1000 the right, y=0 the top, y=1000 the bottom); it is converted to pixels for
+you.
+
+Reply with ONE JSON object and nothing else:
+{"thought": "<one short sentence>", "action": "...", ...}
+
+Actions:
+  {"action": "open", "url": "..."}             open a URL (only localhost, or a public documentation site)
+  {"action": "click", "id": 5}                 click numbered element 5
+  {"action": "click", "x": 640, "y": 400}      click a position on the 0-1000 scale
+  {"action": "type", "text": "...", "id": 5}   type into element 5 (id optional)
+  {"action": "type", "text": "...", "enter": true}   and press Enter
+  {"action": "key", "keys": "Escape"}          Enter, Escape, Tab, Delete, ctrl+z, ctrl+a, Page_Down
+  {"action": "scroll", "direction": "down"}    "up" or "down"
+  {"action": "hover", "id": 5}                 hover numbered element 5 (e.g. to reveal a tooltip or menu)
+  {"action": "hover", "x": 640, "y": 400}      hover a position on the 0-1000 scale
+  {"action": "back"}                           browser back
+  {"action": "wait", "seconds": 2}             pause
+  {"action": "done", "report": "..."}          finished: say what you did, what you saw, what looks wrong
+
+Rules:
+- One action per reply. Look at the new screenshot before deciding again; element numbers change every turn.
+- Only open localhost URLs or public documentation sites.
+- Never type passwords, payment or personal details.
+- If an action did not change the screen, try something different.
+- Keep going until the task is done, then reply "done" with a report."""
+
+# response_format sent with `delegate` so the reply has the shape we expect.
+DELEGATE_ACTION_SCHEMA = {"type": "json_schema", "json_schema": {"name": "action", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False, "required": ["thought", "action"],
+    "properties": {
+        "thought": {"type": "string", "maxLength": 200},
+        "action": {"type": "string", "enum": ["open", "click", "type", "key", "scroll", "back", "wait", "hover", "done"]},
+        "id": {"type": "integer"}, "x": {"type": "integer"}, "y": {"type": "integer"},
+        "url": {"type": "string"}, "text": {"type": "string"}, "enter": {"type": "boolean"},
+        "keys": {"type": "string"}, "direction": {"type": "string", "enum": ["up", "down"]},
+        "seconds": {"type": "number"}, "report": {"type": "string"}}}}}
+
+
+VISION_API = None
+VISION_MODEL = None
+
+
+def load_vision_config():
+    """Return (vision_api, vision_model) from the environment, else the env file, else defaults."""
+    api = os.environ.get(VISION_API_ENV)
+    model = os.environ.get(VISION_MODEL_ENV)
+    env_file = os.environ.get(ENV_FILE_ENV, ENV_FILE)
+    if not api or not model:
+        filevars = _read_env_file(env_file)
+        api = api or filevars.get(VISION_API_ENV) or DEFAULT_VISION_API
+        model = model or filevars.get(VISION_MODEL_ENV) or DEFAULT_VISION_MODEL
+    return (api or DEFAULT_VISION_API), (model or DEFAULT_VISION_MODEL)
+
+
+def prefer_loaded_vision_model(api, configured):
+    """The model already on the router when it can see (no model swap, the agent does its own looking);
+    otherwise the configured one. An explicit VISION_MODEL in the environment always wins.
+    VISION_MODELS (env or env file, comma-separated) lists the router models that can see."""
+    if os.environ.get(VISION_MODEL_ENV):
+        return configured
+    filevars = _read_env_file(os.environ.get(ENV_FILE_ENV, ENV_FILE))
+    listed = os.environ.get("VISION_MODELS") or filevars.get("VISION_MODELS") or ""
+    vision = {m.strip() for m in listed.split(",") if m.strip()}
+    if not vision:
+        return configured
+    try:
+        with urllib.request.urlopen(api.rstrip("/") + "/models", timeout=5) as resp:
+            models = json.load(resp).get("data") or []
+    except Exception:
+        return configured
+    for m in models:
+        if m.get("id") in vision and (m.get("slerm") or {}).get("status") in ("loaded", "loading"):
+            return m["id"]
+    return configured
+
+
+def capture_view(api, session, token):
+    """Observe the page with element marks drawn; return the observe reply (screenshot, elements, text...)."""
+    status, data = _request(api, session, "POST", "/api/observe",
+                            body={"marks": True, "max_width": SCREENSHOT_MAX_WIDTH},
+                            token=token, timeout=OBSERVE_TIMEOUT)
+    if status != 200:
+        raise ApiError(_http_message("observe", status, data))
+    return data
+
+
+def strip_think(text):
+    return re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
+
+
+def ask_vision(model, system_text, user_text, image_b64=None, response_format=None, first=False):
+    """Ask the vision model one question; return its answer (content, else reasoning_content)."""
+    if first:
+        print("Asking %s (it may need a few minutes to load)..." % model)
+    user_content = [{"type": "text", "text": user_text}]
+    if image_b64:
+        user_content.append({"type": "image_url",
+                             "image_url": {"url": "data:image/png;base64," + image_b64}})
+    body = {"model": model, "temperature": 0.2, "max_tokens": 1500,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "messages": [{"role": "system", "content": system_text},
+                         {"role": "user", "content": user_content}]}
+    if response_format is not None:
+        body["response_format"] = response_format
+    url = VISION_API.rstrip("/") + "/chat/completions"
+    req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    timeout = VISION_LOAD_TIMEOUT if first else VISION_TIMEOUT
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        try:
+            err_raw = e.read()
+        except Exception:
+            err_raw = b""
+        detail = _error_detail(json.loads(err_raw.decode("utf-8")) if err_raw.strip() else {})
+        msg = "the vision API at %s answered HTTP %s" % (url, e.code)
+        if detail:
+            msg += " (%s)" % detail
+        raise ApiError(msg)
+    except urllib.error.URLError as e:
+        raise ApiError("cannot reach the vision API at %s: %s" % (url, e.reason))
+    except (TimeoutError, OSError) as e:
+        raise ApiError("cannot reach the vision API at %s: %s" % (url, e))
+    try:
+        parsed = json.loads(raw.decode("utf-8")) if raw.strip() else {}
+    except json.JSONDecodeError:
+        raise ApiError("the vision API returned an unreadable response")
+    try:
+        msg = parsed["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError):
+        raise ApiError("the vision API returned no answer")
+    content = msg.get("content")
+    if not content:
+        content = msg.get("reasoning_content") or ""
+    if isinstance(content, list):
+        content = "\n".join(p.get("text", "") for p in content
+                            if isinstance(p, dict) and p.get("type") == "text")
+    return content or ""
+
+
+def parse_vision_action(raw):
+    """The first balanced {...} in the model's reply that has an allowed action, or None."""
+    text = strip_think(raw)
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.M)
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            c = text[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(obj, dict) and obj.get("action") in (
+                            "open", "click", "type", "key", "scroll", "back", "wait", "hover", "done"):
+                        return obj
+                    break
+        start = text.find("{", start + 1)
+    return None
+
+
+def host_of(url):
+    m = re.match(r"^[a-z]+://([^/:?#]+)", url or "", re.I)
+    host = (m.group(1).lower() if m else "")
+    return host[4:] if host.startswith("www.") else host
+
+
+_PUBLIC_DOC = ("mdn.mozilla.net", "developer.mozilla.org", "python.org", "go.dev",
+               "rust-lang.org", "w3schools.com", "web.dev", "google.dev", "doc.rs",
+               "wikipedia.org")
+
+
+def _is_safe_open_url(url):
+    """Only localhost URLs or public documentation sites may be opened by the agent."""
+    host = host_of(url)
+    if not host:
+        return False
+    if host == "localhost" or host.startswith("127.") or host == "::1":
+        return True
+    return host in _PUBLIC_DOC or any(host.endswith("." + s) for s in _PUBLIC_DOC)
+
+
+_SECRET_RE = re.compile(r"\b(?:\d[ -]*){16,19}\b")   # a credit-card-ish run of digits
+
+
+def _blocked_delegate(action, elements):
+    """A safety guard the model cannot talk its way past. Return a reason string, or ''."""
+    kind = action.get("action")
+    if kind == "open":
+        if not _is_safe_open_url(action.get("url", "")):
+            return "only localhost URLs or public documentation sites may be opened"
+    if kind == "type":
+        eid = action.get("id")
+        if isinstance(eid, int):
+            el = elements.get(eid)
+            if isinstance(el, dict) and (
+                    (el.get("tag") == "input" and str(el.get("type", "")).lower() == "password")
+                    or str(el.get("role", "")).lower() == "password"):
+                return 'typing into a password field is not allowed'
+        if _SECRET_RE.search(str(action.get("text", ""))):
+            return "typing card numbers or long digit strings is not allowed"
+    return ""
+
+
+def describe_delegate_action(action, elements):
+    """A short human label for a step line, e.g. ``click [5] "Calculate"``."""
+    kind = action.get("action")
+
+    def where(prefix=""):
+        i = action.get(prefix + "id")
+        if isinstance(i, int):
+            el = elements.get(i)
+            if el and el.get("text"):
+                return '[%d] "%s"' % (i, str(el["text"])[:40])
+            return "[%d]" % i
+        x, y = action.get(prefix + "x"), action.get(prefix + "y")
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            return "[%.0f, %.0f]" % (x, y)
+        return ""
+
+    if kind == "open":
+        return "open %s" % action.get("url", "")
+    if kind == "click":
+        return "click %s" % where()
+    if kind == "type":
+        s = 'type "%s"' % str(action.get("text", ""))[:60]
+        w = where()
+        if w:
+            s += " into %s" % w
+        if action.get("enter"):
+            s += " + Enter"
+        return s
+    if kind == "key":
+        return "press %s" % action.get("keys", "")
+    if kind == "scroll":
+        return "scroll %s" % action.get("direction", "down")
+    if kind in ("back", "wait", "done"):
+        return kind
+    if kind == "hover":
+        return "hover " + where()
+    return str(kind or "action")
+
+
+def translate_delegate_action(action, obs):
+    """Turn the model's action into a /api/act action, converting a 0-1000 x,y to pixels."""
+    kind = action.get("action")
+    screen = obs.get("screen") or {}
+    w = screen.get("w") or 1280
+    h = screen.get("h") or 800
+    if kind == "open":
+        return {"action": "navigate", "url": action.get("url", "")}
+    if kind == "click":
+        if isinstance(action.get("id"), int):
+            return {"action": "click", "id": action["id"]}
+        x, y = action.get("x"), action.get("y")
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            return {"action": "click_xy",
+                    "x": max(0, min(w - 1, round(x * w / 1000))),
+                    "y": max(0, min(h - 1, round(y * h / 1000)))}
+    if kind == "type":
+        act = {"action": "type", "text": action.get("text", ""),
+               "enter": bool(action.get("enter")), "clear": True}
+        if isinstance(action.get("id"), int):
+            act["id"] = action["id"]
+        return act
+    if kind == "key":
+        return {"action": "key", "keys": action.get("keys", "")}
+    if kind == "scroll":
+        return {"action": "scroll", "direction": action.get("direction", "down"), "amount": 5}
+    if kind == "hover":
+        if isinstance(action.get("id"), int):
+            return {"action": "hover", "id": action["id"]}
+        x, y = action.get("x"), action.get("y")
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            return {"action": "hover",
+                    "x": max(0, min(w - 1, round(x * w / 1000))),
+                    "y": max(0, min(h - 1, round(y * h / 1000)))}
+    if kind == "back":
+        return {"action": "back"}
+    if kind == "wait":
+        try:
+            secs = int(action.get("seconds", 1))
+        except (TypeError, ValueError):
+            secs = 1
+        return {"action": "wait", "seconds": max(0, min(10, secs))}
+    raise AssertionError("not an act action: %r" % kind)
+
+
+def delegate_act(api, session, token, action, caption_text):
+    """Post one action to /api/act for the delegate loop. Return an exit code."""
+    if health_user_control(api, session):
+        if not wait_for_handback(api, session):
+            return EXIT_USERCONTROL
+    caption(api, session, caption_text, True, token)
+    try:
+        status, data = _request(api, session, "POST", "/api/act", body=action,
+                                token=token, timeout=ACT_TIMEOUT)
+    except ApiError as e:
+        caption(api, session, "", False, token)
+        print("desktop: %s" % e, file=sys.stderr)
+        return EXIT_API
+    caption(api, session, "", False, token)
+    if status == 409:
+        if not wait_for_handback(api, session):
+            return EXIT_USERCONTROL
+        caption(api, session, caption_text, True, token)
+        try:
+            status, data = _request(api, session, "POST", "/api/act", body=action,
+                                    token=token, timeout=ACT_TIMEOUT)
+        except ApiError as e:
+            caption(api, session, "", False, token)
+            print("desktop: %s" % e, file=sys.stderr)
+            return EXIT_API
+        caption(api, session, "", False, token)
+        if status == 409:
+            return EXIT_USERCONTROL
+    if status == 400 or not isinstance(data, dict) or not data.get("ok", False):
+        detail = _error_detail(data) or "action rejected"
+        print("desktop: %s" % detail)
+        return EXIT_API
+    return EXIT_OK
+
+
+def cmd_see(api, session, token, question):
+    """One screenshot + question to the vision model, then print its answer."""
+    obs = capture_view(api, session, token)
+    title = obs.get("title") or ""
+    url = obs.get("url") or ""
+    page_text = (obs.get("text") or "")[:PAGE_TEXT_LIMIT]
+    image_b64 = obs.get("screenshot", "") or ""
+    user_text = "Page: %s — %s\n\nPage text:\n%s\n\nQuestion:\n%s" % (
+        title, url, page_text, question)
+    system = ("You look at a screenshot of a web page for a coding assistant that cannot see. Answer its "
+              "question about what is visible: layout, colours, alignment, what is shown or missing. "
+              "Be specific and brief.")
+    answer = ask_vision(VISION_MODEL, system, user_text, image_b64, response_format=None, first=True)
+    print("Desktop session: %s" % session)
+    print("Vision model: %s" % VISION_MODEL)
+    print("Answer:")
+    print(answer)
+    return EXIT_OK
+
+
+def cmd_delegate(api, session, token, task, max_steps):
+    """Let the vision model drive the desktop to do TASK, then report."""
+    history = []
+    last_sig = None
+    repeats = 0
+    bad = 0
+    first_call = True
+    exit_code = EXIT_API
+    reason = ""
+    report = ""
+    step = 0
+    try:
+        while step < max_steps:
+            step += 1
+            obs = capture_view(api, session, token)
+            elements = {e["id"]: e for e in (obs.get("elements") or [])
+                        if isinstance(e, dict) and isinstance(e.get("id"), int)}
+            title = obs.get("title") or ""
+            url = obs.get("url") or ""
+            page_text = (obs.get("text") or "")[:PAGE_TEXT_LIMIT]
+            image_b64 = obs.get("screenshot", "") or ""
+
+            items = "\n".join("[%d] %s \"%s\"" % (eid, el.get("tag", ""),
+                                                   (el.get("text", "") or "")[:40])
+                              for eid, el in sorted(elements.items())) or "(no clickable elements)"
+            what = "\n".join("- " + h for h in history) or "(nothing yet)"
+            done_example = ('{"thought": "...", "action": "done", '
+                            '"report": "what you did, what you saw, what looks wrong"}')
+            user_text = ("TASK: " + task +
+                         "\n\nWhat you have done so far:\n" + what +
+                         "\n\nCurrent page: " + title + " — " + url +
+                         "\n\nPage text:\n" + page_text +
+                         "\n\nClickable elements:\n" + items +
+                         "\n\nReply with ONE JSON action to make progress. Prefer clicking an element "
+                         "by number." +
+                         "\nWhen the task is finished, reply with: " + done_example)
+
+            raw = ask_vision(VISION_MODEL, DELEGATE_SYSTEM_PROMPT,
+                             user_text, image_b64,
+                             response_format=DELEGATE_ACTION_SCHEMA, first=first_call)
+            first_call = False
+
+            action = parse_vision_action(raw)
+            if action is None:
+                bad += 1
+                history.append("your last reply was not a usable JSON action - reply with exactly one JSON object")
+                print("step %d: (no usable action)" % step)
+                if bad >= DELEGATE_BAD_LIMIT:
+                    reason = "%d unparseable replies in a row" % DELEGATE_BAD_LIMIT
+                    break
+                continue
+            bad = 0
+
+            sig = json.dumps({k: action.get(k) for k in ("action", "id", "x", "y",
+                                   "url", "text", "keys", "direction", "enter")}, sort_keys=True)
+            if sig == last_sig:
+                repeats += 1
+            else:
+                repeats = 1
+                last_sig = sig
+            if repeats >= DELEGATE_REPEAT_LIMIT:
+                label = describe_delegate_action(action, elements)
+                history.append('%s -> REFUSED: you did exactly this %d times already and it did not '
+                               "help. Do something different." % (label, DELEGATE_REPEAT_LIMIT))
+                print("step %d: (refused repeat: %s)" % (step, label))
+                continue
+
+            block = _blocked_delegate(action, elements)
+            if block:
+                label = describe_delegate_action(action, elements)
+                history.append("%s -> REFUSED: %s" % (label, block))
+                print("step %d: (refused: %s)" % (step, block))
+                continue
+
+            label = describe_delegate_action(action, elements)
+            if action.get("action") == "done":
+                report = str(action.get("report") or "").strip()
+                history.append("done: %s" % report)
+                print("step %d: %s" % (step, label))
+                exit_code = EXIT_OK
+                break
+
+            act = translate_delegate_action(action, obs)
+            code = delegate_act(api, session, token, act, "vision agent: " + label)
+            if code != EXIT_OK:
+                exit_code = EXIT_API
+                reason = "the desktop rejected an action" if code == EXIT_API else "the desktop is under user control"
+                break
+            history.append("%s -> ok" % label)
+            print("step %d: %s" % (step, label))
+    except ApiError as e:
+        print("desktop: %s" % e, file=sys.stderr)
+        exit_code = EXIT_API
+        reason = str(e)
+    finally:
+        caption(api, session, "", False, token)
+
+    print()
+    print("Desktop session: %s" % session)
+    print("Vision model: %s" % VISION_MODEL)
+    print("Steps: %d" % step)
+    print("Report:")
+    if exit_code == EXIT_OK:
+        print(report or "(no report)")
+    else:
+        if not reason:
+            reason = "the step limit was reached"
+        print("(stopped before finishing: %s)" % reason)
+    return exit_code
+
+
+# ---- errors and verify (2026-10-09) ---------------------------------------
+# Agents kept calling pages "working" that weren't: a script that never ran, blocked map tiles, a black
+# satellite layer, a page served from the browser cache. `errors` shows what the browser recorded for the
+# page; `verify` reloads it fresh and gives a verdict an agent can't talk its way past.
+
+DIAG_TIMEOUT = 60
+VERIFY_SETTLE = 20            # seconds to wait for the page to stop loading
+IMAGE_FAIL_SHARE = 0.10       # a few missing tiles is normal; more than this share of images failing is not
+BROKEN_TEXT_RE = re.compile(r"(?<![\w-])(undefined|NaN|\[object Object\])(?![\w-])")
+
+VERIFY_SYSTEM_PROMPT = """You are a strict QA reviewer. You get a screenshot of a web app that a developer says is
+finished, plus its visible text. You have not seen their code or their claims. Report only problems you can actually
+see: blank, black or grey areas where content should be; error messages; "API key required", "access blocked" or
+watermark text over maps or images; placeholder, sample or demo data; spinners or "Loading..." that never finished;
+overlapping, cut-off or unreadable text; empty lists, charts or maps. Do not invent problems and do not judge taste."""
+
+VERIFY_SCHEMA = {"type": "json_schema", "json_schema": {"name": "review", "strict": True, "schema": {
+    "type": "object", "additionalProperties": False, "required": ["broken", "problems", "missing"],
+    "properties": {"broken": {"type": "boolean"},
+                   "problems": {"type": "array", "items": {"type": "string", "maxLength": 200}, "maxItems": 8},
+                   "missing": {"type": "array", "items": {"type": "string", "maxLength": 200}, "maxItems": 8}}}}}
+
+
+def diag(api, session, token, settle=0, full=True):
+    status, data = _request(api, session, "POST", "/api/diag", body={"settle": settle, "full": full},
+                            token=token, timeout=DIAG_TIMEOUT)
+    if status != 200:
+        raise ApiError(_http_message("diag", status, data))
+    return data
+
+
+def cmd_errors(api, session, token):
+    d = diag(api, session, token)
+    print("Desktop session: %s" % session)
+    log = d.get("log")
+    if not d.get("url"):
+        print("No page is open.")
+        return EXIT_OK
+    if not log:
+        print("Page: %s — %s" % (d.get("title") or "", d.get("url")))
+        print("Nothing recorded for this tab%s." % ("" if d.get("watching") else
+                                                   " (the desktop is not recording page errors - report-bug it)"))
+        return EXIT_OK
+    kinds = ", ".join("%d %s" % (n, t) for t, n in sorted((log.get("by_type") or {}).items(), key=lambda x: -x[1]))
+    print("Page: %s — %s" % (d.get("title") or "", log.get("url") or d.get("url")))
+    print("Loaded %ss ago; %s (%s)%s" % (log.get("age_s"), _plural(log.get("requests", 0), "request"), kinds or "none",
+                                          ", %d still loading" % log["pending"] if log.get("pending") else ""))
+    print()
+    errors, cons, failed = log.get("errors") or [], log.get("console_errors") or [], log.get("failed") or []
+    if not (errors or cons or failed):
+        print("No JavaScript errors, console errors or failed requests since this page loaded.")
+    if errors:
+        print("JavaScript errors (uncaught):")
+        for i, e in enumerate(errors, 1):
+            print("  %d. %s" % (i, e.get("text", "").strip().replace("\n", "\n     ")))
+            if e.get("where") and e["where"] not in (e.get("text") or ""):
+                print("     at %s" % e["where"])
+    if cons:
+        print("Console errors:")
+        for c in cons:
+            print("  - [%s] %s%s" % (c.get("type"), c.get("text", ""), (" (%s)" % c["where"]) if c.get("where") else ""))
+    if failed:
+        print("Failed requests:")
+        for f in failed:
+            print("  - %s %s %s" % (f.get("status") or f.get("error") or "failed", f.get("type", ""), f.get("url", "")))
+    recent = log.get("recent") or []
+    if recent:
+        print()
+        print("Latest console messages:")
+        for r in recent[-15:]:
+            print("  [%s] %s" % (r.get("type"), r.get("text", "")))
+    return EXIT_OK
+
+
+def loaded_vision_model(api):
+    """The router's loaded model when it can see (VISION_MODELS), else None. An explicit VISION_MODEL wins."""
+    if os.environ.get(VISION_MODEL_ENV):
+        return os.environ[VISION_MODEL_ENV]
+    chosen = prefer_loaded_vision_model(api, None)
+    return chosen or None
+
+
+def judge(log, text, settled, elements):
+    """Mechanical verdict on a freshly loaded page: (problems, warnings)."""
+    problems, warnings = [], []
+    if log is None:
+        problems.append("the desktop recorded nothing for this page, so errors can't be checked (report-bug it)")
+        return problems, warnings
+    for e in log.get("errors") or []:
+        first = (e.get("text") or "").strip().splitlines()[0] if (e.get("text") or "").strip() else "error"
+        problems.append("JavaScript error: %s%s" % (first[:200], (" (%s)" % e["where"]) if e.get("where") else ""))
+    for c in log.get("console_errors") or []:
+        problems.append("Console error: %s" % (c.get("text") or "")[:200])
+    failed = [f for f in log.get("failed") or [] if not (f.get("url") or "").split("?")[0].endswith("/favicon.ico")]
+    images = [f for f in failed if f.get("type") == "Image"]
+    others = [f for f in failed if f.get("type") != "Image"]
+    for f in others[:8]:
+        problems.append("Request failed: %s %s %s" % (f.get("status") or f.get("error") or "failed",
+                                                      f.get("type", ""), (f.get("url") or "")[:160]))
+    if len(others) > 8:
+        problems.append("... and %d more failed requests (desktop errors)" % (len(others) - 8))
+    if images:
+        total = max(1, (log.get("by_type") or {}).get("Image", len(images)))
+        eg = "%s %s" % (images[0].get("status") or images[0].get("error"), (images[0].get("url") or "")[:140])
+        msg = "%d of %d images failed to load (e.g. %s)" % (len(images), total, eg)
+        (problems if len(images) / total > IMAGE_FAIL_SHARE or len(images) >= 5 else warnings).append(msg)
+    if not settled:
+        warnings.append("the page was still loading after %d s (%d requests pending)" % (VERIFY_SETTLE, log.get("pending", 0)))
+    shown = (text or "").strip()
+    m = BROKEN_TEXT_RE.search(shown)
+    if m:
+        a = max(0, m.start() - 50)
+        problems.append('the page shows "%s": ...%s...' % (m.group(1), shown[a:m.end() + 50].replace("\n", " ")))
+    if len(shown) < 20 and not elements:
+        problems.append("the page is blank (no visible text and nothing to click)")
+    return problems, warnings
+
+
+def review(model, obs, expect):
+    """The vision model's independent look at the screenshot: (problems, missing, note)."""
+    user = "Page: %s — %s\n\nVisible text:\n%s\n\n" % (obs.get("title") or "", obs.get("url") or "",
+                                                      (obs.get("text") or "")[:PAGE_TEXT_LIMIT])
+    if expect:
+        user += "The page should show:\n%s\nFor each item, check you can actually see it.\n\n" % expect
+    user += 'Reply with JSON only: {"broken": true|false, "problems": ["..."], "missing": ["expected items you cannot see"]}'
+    raw = ask_vision(model, VERIFY_SYSTEM_PROMPT, user, obs.get("screenshot") or "", response_format=VERIFY_SCHEMA,
+                     first=True)
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", strip_think(raw), flags=re.M).strip()
+    try:
+        got = json.loads(text[text.find("{"):text.rfind("}") + 1])
+    except (ValueError, TypeError):
+        return [], [], "the vision check gave no usable answer"
+    problems = [str(p) for p in got.get("problems") or [] if str(p).strip()]
+    missing = [str(p) for p in got.get("missing") or [] if str(p).strip()]
+    if got.get("broken") and not problems and not missing:
+        problems = ["the reviewer says the page looks broken"]
+    return problems, missing, ""
+
+
+PREVIEW_ORIGIN_ENV = "DESKTOP_PREVIEW_ORIGIN"
+DEFAULT_PREVIEW_ORIGIN = "http://127.0.0.1:4097"          # the preview server, as the desktop reaches it
+PREVIEW_STATE_DIR = os.path.expanduser("~/.local/state/code-mode/preview")   # written by Code mode each turn
+
+
+def preview_url(session, url):
+    """The app the way the user's Preview panel shows it: through the preview server (its browser rules; it passes
+    requests to a server started from the project folder). None when this desktop isn't a Code chat's."""
+    try:
+        with open(os.path.join(os.environ.get("DESKTOP_PREVIEW_STATE", PREVIEW_STATE_DIR), session)) as fh:
+            path = fh.read().strip()
+    except OSError:
+        return None
+    if not re.fullmatch(r"/p/[A-Za-z0-9_-]+/[0-9a-f]{32}/", path):
+        return None
+    rest = ""
+    if url:
+        sp = urllib.parse.urlsplit(url)
+        # given the Preview's own address (/p/<chat>/<sig>/...), keep only the part inside the app
+        inner = re.sub(r"^/p/[^/]+/[^/]*/?", "", sp.path) if sp.path.startswith("/p/") else sp.path
+        rest = inner.lstrip("/") + ("?" + sp.query if sp.query else "")
+    return os.environ.get(PREVIEW_ORIGIN_ENV, DEFAULT_PREVIEW_ORIGIN).rstrip("/") + path + rest
+
+
+def cmd_verify(api, session, token, url, expect, force_vision, here=False, direct=False):
+    """Load the page fresh, let it settle, then check it: errors, failed requests, visible text, and a vision
+    model's independent look at the screenshot. Prints VERIFY: PASS or VERIFY: FAIL. With here=True the page is
+    checked as it is now (after clicks), not reloaded: errors since it loaded, and the current screen."""
+    if here and url:
+        print("desktop: verify --here checks the page as it is now; give no URL", file=sys.stderr)
+        return EXIT_BAD
+    if url and "://" not in url:
+        url = "http://" + url          # "localhost:8000"; the browser would otherwise try https
+    via = None if (here or direct) else preview_url(session, url)
+    if not here:
+        target = via or url
+        action = {"action": "navigate", "url": target} if target else {"action": "reload"}
+        code = delegate_act(api, session, token, action, "opencode: verify " + (target or "the page"))
+        if code != EXIT_OK:
+            return code
+    d = diag(api, session, token, settle=VERIFY_SETTLE)
+    if not d.get("watching"):
+        print("VERIFY: FAIL - can't check")
+        print("The desktop is not recording page errors, so this page can't be verified. That is a tool problem:")
+        print('report-bug "desktop verify: page errors are not recorded" "<what you ran and saw>"')
+        return EXIT_VERIFY_FAIL
+    status, obs = _request(api, session, "POST", "/api/observe", body={"marks": False, "max_width": SCREENSHOT_MAX_WIDTH},
+                           token=token, timeout=OBSERVE_TIMEOUT)
+    if status != 200:
+        raise ApiError(_http_message("observe", status, obs))
+    log = d.get("log")
+    problems, warnings = judge(log, obs.get("text") or "", d.get("settled"), obs.get("elements") or [])
+    model = loaded_vision_model(VISION_API) or (VISION_MODEL if force_vision else None)
+    seen = ""
+    if model:
+        try:
+            vp, vm, note = review(model, obs, expect)
+        except ApiError as e:
+            vp, vm, note = [], [], "the vision check failed: %s" % e
+        problems += ["Looks wrong: %s" % p for p in vp] + ["Not visible: %s" % m for m in vm]
+        if note:
+            warnings.append(note)
+        seen = "screenshot reviewed by %s%s" % (model, " against: " + expect if expect else "")
+    else:
+        warnings.append("no vision model is loaded, so nobody looked at the screenshot: read `desktop screenshot "
+                        "shot.png` yourself, or rerun with --vision (loads one: minutes)")
+    print("VERIFY%s: %s" % (" (as it is now, not reloaded)" if here else "",
+                             "PASS" if not problems else "FAIL - %s" % _plural(len(problems), "problem")))
+    print("Page: %s — %s" % (obs.get("title") or "", obs.get("url") or (log or {}).get("url") or ""))
+    if via:
+        print("Loaded the way the user's Preview panel shows it: through the preview server (its browser rules), "
+              "which passes requests to your server when it runs from this project folder.")
+    if log:
+        print("%s: %s, %d failed" % ("Since it loaded" if here else "Loaded fresh (no cache)",
+                                     _plural(log.get("requests", 0), "request"), len(log.get("failed") or [])))
+    if problems:
+        print("Problems:")
+        for i, p in enumerate(problems, 1):
+            print("  %d. %s" % (i, p))
+    if warnings:
+        print("Warnings:")
+        for w in warnings:
+            print("  - %s" % w)
+    print("Checked: JavaScript errors, console errors, failed requests, visible text%s." % ("; " + seen if seen else ""))
+    if via and log:
+        # A path with a leading slash ("/api/x") leaves the app's folder in the Preview, which serves the app under
+        # /p/<chat>/<sig>/: name that plainly (an agent took it for a broken preview server, 2026-10-09).
+        sp = urllib.parse.urlsplit(via)
+        origin, prefix = "%s://%s" % (sp.scheme, sp.netloc), sp.path[:sp.path.find("/", sp.path.find("/", 3) + 1) + 1]
+        escaped = sorted({urllib.parse.urlsplit(f.get("url") or "").path for f in log.get("failed") or []
+                          if (f.get("url") or "").startswith(origin + "/") and
+                          not urllib.parse.urlsplit(f.get("url") or "").path.startswith(prefix)})
+        if escaped:
+            print("Why some requests failed: %s start%s with \"/\", so in the user's Preview they leave your app's folder "
+                  "(the Preview serves your app under %s) and reach nothing. Your server is fine. Use relative paths "
+                  "instead, with no leading slash: fetch(\"%s\"), src=\"app.js\", href=\"styles.css\"; the Preview then "
+                  "passes them to your server." % (", ".join(escaped[:4]), "s" if len(escaped) == 1 else "",
+                                                   prefix, escaped[0].lstrip("/")))
+    if problems:
+        print("Fix these and run `desktop verify` again. Don't hide errors, swallow exceptions or add fallback/demo "
+              "data to make it pass. `desktop errors` shows the details.")
+        if any(p.startswith("Not visible: ") for p in problems) and not here:
+            print("If something only appears after an action (a details panel after a click), keep it in the list: "
+                  "get there with `desktop click`, then check it with `desktop verify --here --expect \"...\"`.")
+        return EXIT_VERIFY_FAIL
+    return EXIT_OK
+
+
+# ---- CLI -----------------------------------------------------------------
+def build_parser():
+    epilog = ("Element numbers come from the most recent page shown.\n"
+              "To test your own web app, start it in the background "
+              "(e.g. `python3 -m http.server 8000 &`) and run "
+              "`desktop open http://localhost:8000`.")
+    p = argparse.ArgumentParser(
+        prog="desktop",
+        description="Let a coding agent test web apps on a real desktop.",
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="command", required=True, metavar="<command>")
+
+    sub.add_parser("look", help="show the page")
+
+    p_open = sub.add_parser("open", help="open URL in the browser, then show the page")
+    p_open.add_argument("url")
+    p_open.add_argument("--new-tab", action="store_true")
+
+    p_click = sub.add_parser("click", help="click element N from the last page shown, then show the page")
+    p_click.add_argument("n", type=int)
+
+    p_type = sub.add_parser("type", help="type into element N (or the focused element), then show the page")
+    p_type.add_argument("n", nargs="?", type=int, default=None)
+    p_type.add_argument("text")
+    p_type.add_argument("--enter", action="store_true")
+    p_type.add_argument("--no-clear", action="store_true")
+
+    p_key = sub.add_parser("key", help="press keys, e.g. Enter, Tab, ctrl+a")
+    p_key.add_argument("keys")
+
+    p_scroll = sub.add_parser("scroll", help="scroll up or down (default: down 5)")
+    p_scroll.add_argument("direction", nargs="?", choices=["up", "down"], default="down")
+    p_scroll.add_argument("amount", nargs="?", type=int, default=5)
+
+    sub.add_parser("back", help="browser back")
+
+    p_wait = sub.add_parser("wait", help="wait then show the page (max 10s)")
+    p_wait.add_argument("seconds", nargs="?", type=int, default=None)
+
+    p_hover = sub.add_parser("hover", help="hover over element N from the last page shown, or --xy X Y (screen pixels)")
+    p_hover.add_argument("n", nargs="?", type=int, default=None)
+    p_hover.add_argument("--xy", nargs=2, type=int, metavar=("X", "Y"))
+
+    p_shot = sub.add_parser("screenshot", help="save a full-size screenshot with element numbers")
+    p_shot.add_argument("file")
+
+    p_up = sub.add_parser("upload", help="attach files to a file upload: upload [N] FILE... (N = the upload button "
+                                         "or field; default: the page's only file input), then show the page")
+    p_up.add_argument("items", nargs="+", metavar="[N] FILE")
+
+    sub.add_parser("status", help="print the session name and whether the user has control")
+    sub.add_parser("done", help="shut this session's desktop down to free memory")
+
+    p_see = sub.add_parser("see", help="ask the vision model what it sees on the current page")
+    p_see.add_argument("question")
+
+    p_deg = sub.add_parser("delegate", help="let the vision model drive the desktop to do a task")
+    p_deg.add_argument("task")
+    p_deg.add_argument("--steps", type=int, default=None)
+
+    sub.add_parser("errors", help="JavaScript errors, console output and failed requests since the page loaded")
+
+    p_ver = sub.add_parser("verify", help="load the page fresh and check it: prints VERIFY: PASS or FAIL")
+    p_ver.add_argument("url", nargs="?", default=None, help="your app's address (default: reload the current page)")
+    p_ver.add_argument("--expect", default="", help='what the page must show, e.g. "a map of the Gulf, a list of storms"')
+    p_ver.add_argument("--vision", action="store_true", help="load a vision model if none is loaded (minutes)")
+    p_ver.add_argument("--here", action="store_true",
+                       help="check the page as it is now (after clicks), without reloading")
+    p_ver.add_argument("--direct", action="store_true",
+                       help="load URL itself instead of through the user's Preview (debugging only)")
+
+    return p
+
+
+def main(argv):
+    args = build_parser().parse_args(argv)
+    api, token = load_credentials()
+    session = resolve_session()
+    global VISION_API, VISION_MODEL
+    VISION_API, VISION_MODEL = load_vision_config()
+    VISION_MODEL = prefer_loaded_vision_model(VISION_API, VISION_MODEL)
+    try:
+        if args.command == "look":
+            return cmd_look(api, session, token)
+        if args.command == "screenshot":
+            return cmd_screenshot(api, session, token, args.file)
+        if args.command == "status":
+            return cmd_status(api, session, token)
+        if args.command == "done":
+            return cmd_done(api, session, token)
+        if args.command == "see":
+            return cmd_see(api, session, token, args.question)
+        if args.command == "errors":
+            return cmd_errors(api, session, token)
+        if args.command == "upload":
+            return cmd_upload(api, session, token, args.items)
+        if args.command == "verify":
+            return cmd_verify(api, session, token, args.url, args.expect, args.vision, args.here, args.direct)
+        if args.command == "delegate":
+            steps = args.steps
+            if steps is None:
+                steps = _int_env(DELEGATE_STEPS_ENV, DELEGATE_DEFAULT_STEPS)
+            if steps < 1:
+                print("desktop: --steps must be at least 1", file=sys.stderr)
+                return EXIT_BAD
+            return cmd_delegate(api, session, token, args.task, steps)
+        action, desc = build_action(args)
+        return do_act(api, session, token, action, desc)
+    except ApiError as e:
+        print("desktop: %s" % e, file=sys.stderr)
+        return EXIT_API
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

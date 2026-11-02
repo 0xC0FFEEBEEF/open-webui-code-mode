@@ -1,0 +1,150 @@
+[
+ {
+  "name": "desktop-cli",
+  "label": "Desktop tool",
+  "branch": "master",
+  "test": [
+   "{venv}/bin/python",
+   "-m",
+   "pytest",
+   "-q",
+   "-p",
+   "no:cacheprovider"
+  ],
+  "install": [
+   {
+    "from": "desktop",
+    "to": "~/.local/bin/desktop",
+    "mode": "0755"
+   }
+  ],
+  "restart": []
+ },
+ {
+  "name": "code-preview",
+  "label": "Preview server",
+  "branch": "master",
+  "test": [
+   "{venv}/bin/python",
+   "-m",
+   "pytest",
+   "-q",
+   "-p",
+   "no:cacheprovider"
+  ],
+  "install": [
+   {
+    "from": "code-preview.py",
+    "to": "~/.local/lib/code-mode/code-preview.py",
+    "mode": "0644"
+   }
+  ],
+  "restart": [
+   "code-preview"
+  ]
+ },
+ {
+  "name": "code-fixer",
+  "label": "Bug fixer",
+  "branch": "main",
+  "test": [
+   "{venv}/bin/python",
+   "-m",
+   "pytest",
+   "-q",
+   "-p",
+   "no:cacheprovider"
+  ],
+  "install": [
+   {
+    "from": "code-fixer.py",
+    "to": "~/.local/lib/code-mode/code-fixer.py",
+    "mode": "0644"
+   },
+   {
+    "from": "viewer.html",
+    "to": "~/.local/lib/code-mode/viewer.html",
+    "mode": "0644"
+   },
+   {
+    "from": "log.html",
+    "to": "~/.local/lib/code-mode/log.html",
+    "mode": "0644"
+   },
+   {
+    "from": "report-bug",
+    "to": "~/.local/bin/report-bug",
+    "mode": "0755"
+   }
+  ],
+  "restart": [
+   "code-fixer"
+  ]
+ },
+ {
+  "name": "code-mode",
+  "label": "Open WebUI side",
+  "branch": "main",
+  "test": [
+   "sh",
+   "check.sh"
+  ],
+  "install": [
+   {
+    "from": "agents/AGENTS.md",
+    "to": "~/.config/opencode/AGENTS.md",
+    "mode": "0644"
+   },
+   {
+    "from": "agents/skills/frontend-design/SKILL.md",
+    "to": "~/.config/opencode/skills/frontend-design/SKILL.md",
+    "mode": "0644"
+   },
+   {
+    "from": "agents/skills/frontend-design/board.html",
+    "to": "~/.config/opencode/skills/frontend-design/board.html",
+    "mode": "0644"
+   },
+   {
+    "from": "agents/opencode-agents/ask.md",
+    "to": "~/.config/opencode/agents/ask.md",
+    "mode": "0644"
+   },
+   {
+    "from": "agents/opencode-agents/review.md",
+    "to": "~/.config/opencode/agents/review.md",
+    "mode": "0644"
+   }
+  ],
+  "restart": [],
+  "remote": "owui/"
+ },
+ {
+  "name": "code-live",
+  "label": "Live window",
+  "branch": "main",
+  "test": [
+   "{venv}/bin/python",
+   "-m",
+   "pytest",
+   "-q",
+   "-p",
+   "no:cacheprovider"
+  ],
+  "install": [
+   {
+    "from": "code-live.py",
+    "to": "~/.local/lib/code-mode/code-live.py",
+    "mode": "0644"
+   },
+   {
+    "from": "live.html",
+    "to": "~/.local/lib/code-mode/live.html",
+    "mode": "0644"
+   }
+  ],
+  "restart": [
+   "code-live"
+  ]
+ }
+]

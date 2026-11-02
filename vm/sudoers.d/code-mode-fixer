@@ -1,0 +1,3 @@
+# The bug fixer and the feature manager (code-fixer / code-features services, user coder) may read masked Code-mode
+# logs and restart the services a fix or a deployed feature changes. opencode itself runs with NoNewPrivileges.
+coder ALL=(root) NOPASSWD: /usr/local/sbin/code-mode-logs, /usr/local/sbin/code-mode-logs [0-9]*, /usr/bin/systemctl restart code-preview, /usr/bin/systemctl restart code-fixer, /usr/bin/systemctl restart code-live

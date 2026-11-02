@@ -1,0 +1,22 @@
+[Unit]
+Description=code-preview.py - read-only static preview server for Code chat folders
+After=network.target
+
+[Service]
+Type=simple
+User=coder
+Group=coder
+EnvironmentFile=/etc/code-mode/preview.env
+ExecStart=/usr/bin/python3 /usr/local/lib/code-mode/code-preview.py
+# always: a clean kill (an agent's `kill $(lsof -t -i:8000)` on 2026-10-13 hit this server too, because it was
+# passing a request to that app) must not leave the Preview down
+Restart=always
+RestartSec=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

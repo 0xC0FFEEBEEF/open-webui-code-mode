@@ -1,0 +1,21 @@
+#!/bin/bash
+# doc-shot FILE [OUTDIR] - render a spreadsheet or document to PNG images so a coding agent can look at what it made
+# (2026-10-09). Spreadsheets give one image per sheet (each sheet on one page); other documents one per page.
+# Headless LibreOffice with a throwaway profile (parallel runs, clean first start), then pdftoppm. Prints the paths.
+set -euo pipefail
+f="${1:?usage: doc-shot FILE [OUTDIR]}"
+[ -f "$f" ] || { echo "doc-shot: no such file: $f" >&2; exit 2; }
+out="${2:-/tmp/doc-shot-$(date +%s)-$$}"
+mkdir -p "$out"
+prof="$(mktemp -d /tmp/lo-profile.XXXXXX)"
+trap 'rm -rf "$prof"' EXIT
+case "${f,,}" in
+  *.xlsx|*.xlsm|*.xls|*.ods|*.csv|*.tsv) filter='pdf:calc_pdf_Export:{"SinglePageSheets":{"type":"boolean","value":"true"}}' ;;
+  *) filter=pdf ;;
+esac
+timeout 180 soffice "-env:UserInstallation=file://$prof" --headless --norestore --nologo \
+  --convert-to "$filter" --outdir "$out" "$f" >/dev/null 2>&1 || true
+pdf="$out/$(basename "${f%.*}").pdf"
+[ -s "$pdf" ] || { echo "doc-shot: LibreOffice could not render $f" >&2; exit 1; }
+pdftoppm -png -scale-to 1600 "$pdf" "$out/page"
+ls -1 "$out"/page*.png

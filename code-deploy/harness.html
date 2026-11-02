@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FEATURES — demo harness</title>
+<style>
+  body { margin: 0; padding: 16px; background: #111; color: #ddd;
+         font: 13px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  h1 { font-size: 13px; margin: 0 0 8px; letter-spacing: .12em; text-transform: uppercase;
+       color: #f5a524; }
+  #frame { border: 1px solid #333; background: #0b0b0c; display: block; }
+  #log { margin-top: 12px; height: 170px; overflow: auto; box-sizing: border-box;
+        width: 640px; background: #000; border: 1px solid #222; padding: 8px;
+        font: 11px/1.4 monospace; white-space: pre-wrap; color: #9fd08a; }
+  .hint { color: #888; font-size: 11px; margin: 6px 0 0; }
+</style>
+</head>
+<body>
+  <h1>FEATURES &middot; demo harness</h1>
+  <iframe id="frame" src="/features/" width="640" height="720" frameborder="0"></iframe>
+  <p class="hint">The iframe is the Features page running as a panel. This harness plays the
+    Open WebUI parent's part: it answers <code>features:hello</code> with the admin token and
+    logs the messages the page posts up.</p>
+  <div id="log"></div>
+  <script>
+    (function () {
+      // The fake Open WebUI admin token (see fakes.ADMIN_TOKEN).
+      var ADMIN_TOKEN = "owui-admin-token";
+      var PARENT_ORIGIN = "http://127.0.0.1:4113";
+      var logEl = document.getElementById("log");
+      function stamp() {
+        var d = new Date();
+        return String(d.getHours()).padStart(2, "0") + ":" +
+               String(d.getMinutes()).padStart(2, "0") + ":" +
+               String(d.getSeconds()).padStart(2, "0");
+      }
+      function log(msg) {
+        logEl.textContent += stamp() + "  " + msg + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      window.addEventListener("message", function (ev) {
+        var d = (ev.data || {});
+        if (d.type === "features:hello") {
+          // Play the parent's part: hand the panel its bearer token.
+          ev.source.postMessage(
+            { type: "features:token", token: ADMIN_TOKEN }, PARENT_ORIGIN);
+          log("features:hello  ->  features:token");
+        } else {
+          var extra = "";
+          if (d.chat_id !== undefined) extra += " chat_id=" + d.chat_id;
+          if (d.n !== undefined) extra += " n=" + d.n;
+          log("features:" + d.type + (extra ? " (" + extra.slice(1) + ")" : ""));
+        }
+      });
+      log("harness ready: awaiting features:hello");
+    })();
+  </script>
+</body>
+</html>

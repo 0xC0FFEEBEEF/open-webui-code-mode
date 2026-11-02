@@ -1,0 +1,1528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>opencode · live</title>
+<style>
+  :root {
+    --bg: #0a0a0b; --raise: #111113; --line: #1f1f23; --hair: #17171a;
+    --text: #e4e4e7; --soft: #b4b4bb; --dim: #85858f; --faint: #4f4f58;
+    --blue: #6ea8ff; --green: #3ecf8e; --red: #f26d6d; --amber: #f5a524;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --stage-h: 340px; --log-h: 340px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: transparent; color: var(--text);
+    font: 13px/1.5 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  [hidden] { display: none !important; }
+
+  #win { position: relative; background: var(--bg); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+  .solo #win { border-radius: 0; border: 0; min-height: 100vh; }
+
+  /* ---------- header */
+  header { display: flex; align-items: center; gap: 9px; height: 38px; padding: 0 10px 0 14px; user-select: none; }
+  .done header, .past header { cursor: pointer; }
+  .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .live .dot { background: var(--blue); animation: ping 1.6s ease-out infinite; }
+  .ok .dot { background: var(--green); } .bad .dot { background: var(--red); } .stopped .dot { background: var(--amber); }
+  .brand { flex: none; font: 600 10.5px/1 var(--mono); letter-spacing: .14em; color: var(--soft); text-transform: uppercase; }
+  .model { flex: none; font: 11.5px var(--mono); color: var(--faint); max-width: 28%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model.review { color: var(--amber); }
+  .now { flex: 1; min-width: 0; color: var(--dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta { flex: none; color: var(--dim); font: 11.5px var(--mono); font-variant-numeric: tabular-nums; }
+  .seg { flex: none; display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: #141416; }
+  .seg button { padding: 2px 9px; border-radius: 6px; font-size: 11.5px; color: var(--dim); }
+  .seg button.on { background: #222227; color: var(--text); }
+  .done .seg, .past .seg { display: none; }
+  .hb { flex: none; width: 24px; height: 24px; border-radius: 6px; color: var(--faint); display: grid; place-items: center; }
+  .hb:hover { color: var(--text); background: #18181b; }
+  .hb svg { width: 14px; height: 14px; }
+  .solo #pop, .solo #tog, .solo #watch { display: none; }
+  /* fill: the Code page's Watch mode shows this window as its stage, full height (#fill=1) */
+  .fill, .fill body { height: 100%; }
+  .fill #win { height: 100vh; border-radius: 0; border: 0; display: flex; flex-direction: column; }
+  .fill #stage { flex: 1; min-height: 0; flex-direction: column; }
+  .fill .live.follow #stage { display: flex; }
+  .fill #views { flex: 1; min-height: 0; height: auto; }
+  .fill #body { flex: 1; min-height: 0; height: auto !important; max-height: none !important; }
+  .fill #pop, .fill #tog, .fill #watch { display: none; }
+  .fill .vdesk iframe { margin: 0 auto; }   /* fitDesk() sizes it: the whole desktop, as big as the stage allows */
+  .chev { transition: transform .2s; }
+  .done.open .chev, .past.open .chev, .live.big .chev { transform: rotate(180deg); }
+  .bar { position: relative; height: 1px; background: var(--hair); overflow: hidden; }
+  .live .bar::after { content: ""; position: absolute; inset: 0; width: 30%;
+    background: linear-gradient(90deg, transparent, var(--blue), transparent); animation: sweep 2s ease-in-out infinite; }
+
+  /* ---------- follow stage */
+  #stage { display: none; }
+  .live.follow #stage { display: block; }
+  #tabs { display: flex; align-items: center; gap: 2px; height: 32px; padding: 0 8px; border-bottom: 1px solid var(--hair); overflow: hidden; }
+  .tab { flex: 0 1 auto; min-width: 0; max-width: 220px; display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px;
+    border-radius: 6px; color: var(--faint); font: 11.5px var(--mono); white-space: nowrap; animation: rise .2s ease both; }
+  .tab span { overflow: hidden; text-overflow: ellipsis; }
+  .tab .ti { flex: none; width: 12px; text-align: center; }
+  .tab:hover { color: var(--soft); }
+  .tab.on { background: #18181c; color: var(--text); flex: none; max-width: 300px; }
+  .tab.busy .ti { color: var(--blue); animation: pulse 1.2s ease-in-out infinite; }
+  #resume { margin-left: auto; flex: none; display: none; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 99px;
+    border: 1px solid var(--line); color: var(--soft); font-size: 11px; }
+  #resume i { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); }
+  .pinned #resume { display: flex; }
+  #views { position: relative; height: var(--stage-h); }
+  .big #views { height: calc(var(--stage-h) + 280px); }
+  .view { position: absolute; inset: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #2a2a30 transparent; display: none; }
+  .view.on { display: block; animation: fade .18s ease both; }
+  .vdesk { overflow: hidden; background: #000; }
+  .vdesk iframe { width: 100%; height: 100%; border: 0; display: block; color-scheme: light; }  /* = the viewer's own scheme: a mismatch makes Chrome paint white behind its rounded corners */
+  .vdesk .wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); font-size: 12px; }
+  .vfile { padding: 8px 0 12px; }
+  .vfile .fh, .vweb .url, .vterm .hint { position: sticky; top: -8px; z-index: 1; margin: -8px 0 6px; padding: 7px 14px; background: rgba(10,10,11,.92);
+    backdrop-filter: blur(6px); color: var(--faint); font: 11px var(--mono); display: flex; gap: 10px; }
+  .vfile .fh b { color: var(--soft); font-weight: 500; }
+  .vterm { padding: 8px 14px 14px; font: 12px/1.55 var(--mono); }
+  .vterm .cmd { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 8px; }
+  .vterm .cmd::before { content: "$ "; color: var(--green); }
+  .vterm .cmd.grep::before { content: "⌕ "; color: var(--blue); }
+  .vterm .cmd.code::before { content: "▷ "; color: var(--blue); }
+  .vterm .res { color: #9b9ba5; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; }
+  .vterm .res.err { color: #e79a9a; }
+  .vterm .run { color: var(--blue); font-size: 11px; animation: pulse 1.2s ease-in-out infinite; }
+  .vweb { padding: 8px 0 14px; }
+  .vweb .url { color: var(--dim); }
+  .vweb .url b { color: var(--green); font-weight: 400; }
+  .vweb .page { padding: 4px 16px; color: #c8c8cf; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .vweb .page .loading { color: var(--faint); animation: pulse 1.2s ease-in-out infinite; }
+  .vweb .page u { text-decoration-color: #3a5a8a; text-underline-offset: 2px; color: #a9c4ef; }
+  .vweb .page b { color: var(--text); font-weight: 600; }
+  .vweb .page .img { color: var(--faint); font: 11px var(--mono); }
+  .vweb .page .h1, .vweb .page .h2 { color: #fff; font-size: 15px; font-weight: 600; margin: 6px 0 -4px; }
+  .vweb .page .h3, .vweb .page .h4 { color: var(--text); font-weight: 600; }
+  .vthink { padding: 14px 16px; color: var(--dim); font-style: italic; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; }
+  .vthink .say { font-style: normal; color: var(--text); margin-top: 8px; }
+  #caption { display: flex; gap: 8px; align-items: baseline; padding: 7px 14px 9px; border-top: 1px solid var(--hair); min-height: 34px; }
+  #caption .cl { flex: none; font: 600 9.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+  #caption .ct { flex: 1; min-width: 0; color: var(--dim); font-size: 12px; font-style: italic;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #caption.say .ct { color: var(--soft); font-style: normal; }
+  #caption.ask .ct, #caption.ask .cl { color: var(--amber); font-style: normal; }
+  #caption.err .ct, #caption.err .cl { color: var(--red); font-style: normal; }
+
+  /* ---------- log */
+  #body { display: none; height: var(--log-h); overflow-y: auto; overflow-x: hidden; padding: 6px 14px 10px; scrollbar-width: thin; scrollbar-color: #2a2a30 transparent; }
+  .live.logv #body { display: block; }
+  .big #body { height: calc(var(--log-h) + 280px); }
+  .done.open #body, .past.open #body { display: block; height: auto; max-height: 520px; }
+  .solo #body { height: auto !important; max-height: none !important; overflow: visible; }
+
+  .step { position: relative; padding: 6px 0 2px; }
+  .step + .step { border-top: 1px solid var(--hair); margin-top: 6px; padding-top: 8px; }
+  .sh { display: flex; gap: 8px; font: 10.5px var(--mono); color: var(--faint); letter-spacing: .02em; margin-bottom: 2px; }
+  .sh .n { color: var(--dim); }
+  .p { padding: 2px 0; }
+  .think { color: var(--dim); font-style: italic; font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .think.fin { color: var(--faint); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+  .think.fin.open { display: block; color: var(--dim); }
+  .think .lbl { font: 600 10px var(--mono); letter-spacing: .1em; text-transform: uppercase; font-style: normal; color: var(--faint); margin-right: 6px; }
+  .say { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .say code { font: 12px var(--mono); color: #f3d9a4; }
+  .say strong { font-weight: 600; color: #fff; }
+  .caret::after { content: ""; display: inline-block; width: 6px; height: 1.05em; margin-left: 1px; vertical-align: text-bottom;
+    background: var(--blue); animation: blink 1s steps(1) infinite; }
+  .tool .tl { display: flex; align-items: baseline; gap: 8px; min-width: 0; cursor: pointer; }
+  .tool .ic { flex: none; width: 14px; text-align: center; color: var(--faint); font: 12px var(--mono); }
+  .tool .tn { flex: none; font: 500 12px var(--mono); color: var(--soft); }
+  .tool .ts { flex: 1; min-width: 0; font: 12px var(--mono); color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool .st { flex: none; font: 11px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+  .tool.completed .ic { color: var(--green); } .tool.error .ic, .tool.error .st { color: var(--red); }
+  .tool.running .ic, .tool.streaming .ic { color: var(--blue); animation: pulse 1.2s ease-in-out infinite; }
+  .tool .more { display: none; }
+  .tool.open .more { display: block; }
+  .out { margin: 3px 0 4px 22px; color: #9b9ba5; font: 11.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tool.error .out { color: #e79a9a; }
+  .note { font-size: 12px; color: var(--dim); padding: 3px 0 3px 22px; }
+  .note.ask { color: var(--amber); } .note.err { color: var(--red); }
+  .empty { color: var(--faint); font-size: 12px; padding: 10px 0; }
+
+  /* ---------- code: no box, a hairline and line numbers */
+  .code { font: 11.5px/1.55 var(--mono); overflow-x: auto; scrollbar-width: none; }
+  .tool .code { margin: 4px 0 4px 6px; border-left: 1px solid var(--line); }
+  .code .ln { display: flex; white-space: pre; }
+  .code .no { flex: none; width: 4.2em; padding-right: 12px; text-align: right; color: #34343b; user-select: none; }
+  .code .tx { color: #cfcfd6; padding-right: 14px; }
+  .code .ln.a { background: rgba(62,207,142,.07); } .code .ln.a .no { color: #2f6b52; }
+  .code .ln.d { background: rgba(242,109,109,.07); } .code .ln.d .no { color: #7a3a3a; }
+  .code .ln.a .no::after { content: " +"; } .code .ln.d .no::after { content: " −"; }
+  /* a real diff, worked out by the server: two gutters, red removed / green added, the changed words marked */
+  .code .ln .no2 { flex: none; width: 3.4em; padding-right: 12px; text-align: right; color: #34343b; user-select: none; }
+  .code .ln.rm { background: rgba(242,109,109,.11); box-shadow: inset 2px 0 0 rgba(242,109,109,.55); }
+  .code .ln.rm > .no { color: #b0574f; } .code .ln.rm .tx { color: #ffd7d7; }
+  .code .ln.ad { background: rgba(62,207,142,.11); box-shadow: inset 2px 0 0 rgba(62,207,142,.55); }
+  .code .ln.ad > .no2 { color: #2f8b62; } .code .ln.ad .tx { color: #bff3c8; }
+  .code .ln.rm .wm { background: rgba(242,109,109,.30); border-radius: 3px; }
+  .code .ln.ad .wm { background: rgba(62,207,142,.26); border-radius: 3px; }
+  .code .hk { color: var(--faint); font: 600 10px var(--mono); letter-spacing: .04em; padding: 5px 0 2px 14px; }
+  .code .tail { color: var(--faint); font: 11px var(--mono); padding: 3px 0 0 14px; }
+  .vfile .fh .cnt { color: var(--soft); }
+  .vfile .fh .cnt .m { color: #e07b7b; } .vfile .fh .cnt .p { color: #58c07d; }
+  .code .hk .m { color: #e07b7b; } .code .hk .p { color: #58c07d; }
+  .code .gap { color: var(--faint); padding: 1px 0 1px 14px; font-style: italic; cursor: pointer; }
+  .code .gap:hover { color: var(--dim); }
+  /* a read view: the file the agent opened, the lines its command asked for marked with a blue bar */
+  .code .ln.rd { background: rgba(110,168,255,.10); box-shadow: inset 2px 0 0 rgba(110,168,255,.5); }
+  .code .ln.rd > .no { color: #5d87c9; }
+  .code .hk i { font-weight: 400; font-style: italic; color: var(--dim); }
+  .code .gap.q { cursor: default; font-style: normal; }
+  .code .gap.q:hover { color: var(--faint); }
+  .vfile .fh .rd { color: var(--soft); }
+  .vfile .fh .rd .n { color: #7fb0e8; }
+  .k { color: #c792ea; } .s { color: #c3e88d; } .nm { color: #f78c6c; } .c { color: #5c6370; font-style: italic; }
+  .tg { color: #7fb4ff; } .at { color: #ffcb6b; }
+
+  #jump { position: absolute; right: 14px; bottom: 10px; display: none; padding: 4px 10px; border-radius: 999px;
+    background: #1b1b1f; border: 1px solid var(--line); color: var(--soft); font-size: 11.5px; }
+  .live.logv #jump.on { display: block; }
+  #vjump { position: absolute; right: 14px; bottom: 10px; z-index: 3; display: none; padding: 4px 10px; border-radius: 999px;
+    background: #1b1b1f; border: 1px solid var(--line); color: var(--soft); font-size: 11.5px; }
+  #vjump.on { display: block; }
+
+  @keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(110,168,255,.45); } 80%, 100% { box-shadow: 0 0 0 6px rgba(110,168,255,0); } }
+  @keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @keyframes blink { 50% { opacity: 0; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(3px); } }
+  @keyframes fade { from { opacity: 0; } }
+  /* ---------- narrow (a phone): the header keeps its controls on screen and the tab strip scrolls sideways */
+  @media (max-width: 560px) {
+    header { gap: 6px; padding: 0 6px 0 11px; }
+    .model:not(.review) { display: none; }  /* the model's name goes; "Review · round N" stays */
+    .model.review { max-width: 34%; }
+    .live .brand { display: none; }
+    .meta { font-size: 10.5px; }
+    .seg button { padding: 2px 7px; }
+    #tabs { overflow-x: auto; scrollbar-width: none; }
+    #tabs::-webkit-scrollbar { display: none; }
+    .tab { flex: none; max-width: 150px; }
+    .tab.on { max-width: 210px; }
+  }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
+</style>
+</head>
+<body>
+<div id="win" class="live follow">
+  <header id="hd">
+    <i class="dot"></i><span class="brand">opencode</span><span class="model" id="model"></span>
+    <span class="now" id="now">Connecting…</span>
+    <span class="meta" id="meta"></span>
+    <span class="seg" id="seg"><button data-v="follow" class="on">Follow</button><button data-v="logv">Log</button></span>
+    <button class="hb" id="watch" title="Watch this turn full window"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+    <button class="hb" id="pop" title="Open in a new tab"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 3h4v4M13 3 7.5 8.5M12 9.5V13H3V4h3.5"/></svg></button>
+    <button class="hb" id="tog" title="Taller"><svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m4 6 4 4 4-4"/></svg></button>
+  </header>
+  <div class="bar"></div>
+  <div id="stage">
+    <div id="tabs"><button id="resume"><i></i>Follow</button></div>
+    <div id="views"><button id="vjump" title="Scroll to the newest output and keep following it">↓ Latest</button></div>
+    <div id="caption"><span class="cl">starting</span><span class="ct"></span></div>
+  </div>
+  <div id="body"><div id="log"></div></div>
+  <button id="jump">↓ Follow</button>
+</div>
+<script>
+(function () {
+  "use strict";
+  var $ = function (s) { return document.getElementById(s); };
+  var win = $("win"), body = $("body"), logEl = $("log"), views = $("views"), tabsEl = $("tabs");
+  var solo = window.parent === window;
+  if (solo) document.documentElement.classList.add("solo");
+  // fill: the stage of the Code page's Watch mode (#fill=1). It reports only its own state to the page
+  // ("code:watch-state"); the chat's own window for the turn feeds the overlays, so they are never doubled.
+  var fill = (function () {
+    try { return new URLSearchParams(location.hash.slice(1)).get("fill") === "1"; } catch (e) { return false; }
+  })();
+  if (fill) document.documentElement.classList.add("fill");
+  var DESKTOP = (function () {
+    try { var d = new URLSearchParams(location.hash.slice(1)).get("d"); return d && /^https?:\/\//.test(d) ? d : ""; } catch (e) { return ""; }
+  })();
+
+  var S = null;            // the turn as drawn
+  var es = null, mode = "live", follow = true, skew = 0, hovering = false, full = false;
+  var confirmed = false;  // the server said whether this turn runs (until then "live" is only the starting look)
+  var dirty = new Set(), frame = 0, fails = 0;
+
+  function reset() {
+    S = { steps: new Map(), tools: new Map(), order: 0, since: null, until: null, model: "", review: null, how: null,
+          last: Date.now(), active: null, caption: null,
+          blocked: null,      // waiting on the user (an approval, a question) or on a compaction: {what, ask, since}
+          reread: false };    // a compaction just ended: the next quiet stretch is the model reading the new context
+    logEl.textContent = "";
+    resetStage();
+  }
+
+  // ---------- helpers
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function el(tag, cls, html) { var d = document.createElement(tag); if (cls) d.className = cls; if (html != null) d.innerHTML = html; return d; }
+  function fmt(ms) {
+    var s = Math.max(0, Math.round(ms / 1000)), m = Math.floor(s / 60);
+    return m ? m + "m " + String(s % 60).padStart(2, "0") + "s" : s + "s";
+  }
+  function kfmt(n) { n = n || 0; return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n); }
+  function short(p) {
+    return String(p || "").replace(/\/home\/coder\/projects\/(chats|features)\/[A-Za-z0-9_-]+\/?/g, "")
+      .replace(/\/home\/coder\//g, "~/") || ".";
+  }
+  function base(p) { return short(p).split("/").pop() || short(p); }
+  function md(s) {
+    return esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  }
+  // A string value out of a tool call's JSON that is still being typed: {"path": "a.html", "content": "<!doc...
+  var ESC = { n: "\n", t: "\t", r: "", b: "", f: "" };
+  function jstr(raw, key) {
+    if (typeof raw !== "string") return null;
+    var m = new RegExp('"' + key + '"\\s*:\\s*"').exec(raw);
+    if (!m) return null;
+    var i = m.index + m[0].length, out = [], re = /["\\]/g, done = false;
+    re.lastIndex = i;
+    for (;;) {
+      var hit = re.exec(raw);
+      if (!hit) { out.push(raw.slice(i)); break; }
+      out.push(raw.slice(i, hit.index));
+      if (hit[0] === '"') { done = true; break; }
+      var n = raw.charAt(hit.index + 1);
+      if (!n) break;
+      if (n === "u") {
+        var hex = raw.substr(hit.index + 2, 4);
+        if (hex.length < 4) break;
+        out.push(String.fromCharCode(parseInt(hex, 16)));
+        i = hit.index + 6;
+      } else {
+        out.push(ESC[n] != null ? ESC[n] : n);
+        i = hit.index + 2;
+      }
+      re.lastIndex = i;
+    }
+    return { v: out.join(""), done: done };
+  }
+  function inputOf(t, key) {
+    if (t.input && typeof t.input === "object") return t.input[key] != null ? { v: String(t.input[key]), done: true } : null;
+    return jstr(t.raw, key);
+  }
+  function pathOf(t) { var p = inputOf(t, "path") || inputOf(t, "filePath"); return p ? p.v : ""; }
+  var DESK_RE = /(?:^|[;&|(]\s*|\s)desktop\s+(look|open|click|type|key|scroll|back|wait|screenshot|status|see|delegate|hover|done)\b/;
+  function deskVerb(t) { if (t.name !== "shell") return ""; var c = inputOf(t, "command"); var m = c && DESK_RE.exec(c.v); return m ? m[1] : ""; }
+
+  // ---------- tiny line highlighter (strings, comments, keywords, numbers, tags)
+  var KW = /^(?:const|let|var|function|return|if|else|for|while|do|of|in|new|class|extends|import|from|export|default|async|await|try|catch|finally|throw|switch|case|break|continue|typeof|instanceof|this|null|undefined|true|false|def|self|None|True|False|elif|lambda|with|as|pass|raise|yield|not|and|or|is|global|nonlocal|fn|pub|mut|impl|struct|enum|match|use|mod|type|interface)$/;
+  function langOf(path) {
+    var x = (String(path).split(".").pop() || "").toLowerCase();
+    if (/^(html?|svg|xml|vue|svelte)$/.test(x)) return "html";
+    if (/^(py|sh|bash|zsh|ya?ml|toml|rb|pl|conf|ini|dockerfile)$/.test(x)) return "hash";
+    if (/^(md|txt|log|csv)$/.test(x)) return "plain";
+    return "c";
+  }
+  function hl(line, lang) {
+    if (lang === "plain" || line.length > 2000) return esc(line);
+    var cm = lang === "hash" ? "#.*$" : lang === "html" ? "<!--.*?(?:-->|$)|\\/\\/ .*$|\\/\\*.*?(?:\\*\\/|$)" : "\\/\\/.*$|\\/\\*.*?(?:\\*\\/|$)";
+    var re = new RegExp("(" + cm + ")|(\"(?:[^\"\\\\]|\\\\.)*\"?|'(?:[^'\\\\]|\\\\.)*'?|`(?:[^`\\\\]|\\\\.)*`?)|(</?[A-Za-z][\\w:-]*|/?>)|(\\b[\\w-]+(?==[\"']))|(\\b\\d+(?:\\.\\d+)?\\b)|([A-Za-z_$][\\w$]*)", "g");
+    var out = "", last = 0, m;
+    while ((m = re.exec(line))) {
+      out += esc(line.slice(last, m.index));
+      var t = m[0], cls = m[1] ? "c" : m[2] ? "s" : m[3] ? (lang === "html" ? "tg" : "") : m[4] ? (lang === "html" ? "at" : "") : m[5] ? "nm" : (KW.test(t) ? "k" : "");
+      out += cls ? '<span class="' + cls + '">' + esc(t) + "</span>" : esc(t);
+      last = m.index + t.length;
+      if (!t.length) re.lastIndex++;
+    }
+    return out + esc(line.slice(last));
+  }
+  function codeRows(lines, lang, cls, startNo) { return codeRowsR(lines, lang, cls, startNo, null); }
+  function codeRowsR(lines, lang, cls, startNo, rd) {  // rd: which of these lines the agent actually read
+    var html = "";
+    for (var i = 0; i < lines.length; i++) {
+      var no = Array.isArray(startNo) ? startNo[i] : (startNo || 1) + i;
+      html += '<div class="ln ' + (cls || "") + (rd && rd[i] ? " rd" : "") + '"><span class="no">' + no +
+              '</span><span class="tx">' + hl(lines[i], lang) + "</span></div>";
+    }
+    return html;
+  }
+  function caretLast(box, atEnd) {
+    // atEnd: a typed write covers everything the view shows, so the caret goes at the bottom. In a diff of an edit
+    // the caret belongs at the last added line, not at the unchanged lines the patch shows around it.
+    if (!atEnd) {
+      var ad = box.querySelectorAll(".ln.ad");
+      if (ad.length) { ad[ad.length - 1].querySelector(".tx").classList.add("caret"); return; }
+    }
+    var tx = box.querySelectorAll(".tx");
+    if (tx.length) tx[tx.length - 1].classList.add("caret");
+  }
+
+  // ---------- diffs: the server worked the patch out (it has the file's old content), this only draws it
+  function hasDiff(t) { return !!(t && t.diff && t.diff.hunks && t.diff.hunks.length); }
+  function tailLine(text) { return '<div class="tail">' + esc(text) + "</div>"; }
+  function tailOf(diff) {  // what the patch does not show: old lines still below, or why there is no patch
+    var html = "";
+    if (diff.more_old) html += tailLine(diff.more_old + (diff.more_old === 1 ? " more old line below" : " more old lines below"));
+    if (diff.note) html += tailLine("(" + diff.note + ")");
+    return html;
+  }
+  function diffStat(diff) {
+    var rm = 0, ad = 0;
+    diff.hunks.forEach(function (h) { h.lines.forEach(function (l) { if (l[0] === "-") rm++; else if (l[0] === "+") ad++; }); });
+    return '<span class="cnt"><span class="m">−' + rm + "</span> <span class=\"p\">+" + ad + "</span></span>";
+  }
+  function hunkLabel(h) {  // "@@ line 12 @@" or "@@ lines 12–18 @@": where this patch sits in the file
+    var nos = [];
+    h.lines.forEach(function (l) { if (l[2]) nos.push(l[2]); else if (l[1]) nos.push(l[1]); });
+    var from = h.new_start || h.old_start || nos[0] || 1, to = nos.length ? Math.max.apply(null, nos) : from;
+    return "@@ " + (from === to ? "line " + from : "lines " + from + "–" + to) + " @@";
+  }
+  function wordSpan(text, marks, lang) {  // marks are offsets in the raw line: cut first, highlight each piece
+    if (!marks || !marks.length) return hl(text, lang);
+    var html = "", at = 0;
+    marks.forEach(function (mk) {
+      var s = Math.max(at, Math.min(text.length, mk[0] | 0)), e = Math.max(s, Math.min(text.length, mk[1] | 0));
+      if (s > at) html += hl(text.slice(at, s), lang);
+      if (e > s) html += '<span class="wm">' + hl(text.slice(s, e), lang) + "</span>";
+      at = e;
+    });
+    if (at < text.length) html += hl(text.slice(at), lang);
+    return html;
+  }
+  function diffRows(d, path) {  // one diff's hunks as rows; shared by the Follow tabs and the Log
+    var lang = langOf(d.path || path || ""), html = "";
+    d.hunks.forEach(function (h) {
+      html += '<div class="hk">' + hunkLabel(h) + "</div>" + h.lines.map(function (l) {
+        var cls = l[0] === "-" ? "rm" : l[0] === "+" ? "ad" : "";  // gutters: old line on the left, new line on the right
+        return '<div class="ln ' + cls + '"><span class="no">' + (l[1] || "") + '</span><span class="no2">' + (l[2] || "") +
+               '</span><span class="tx">' + wordSpan(l[3], l[4], lang) + "</span></div>";
+      }).join("");
+    });
+    return html;
+  }
+  function diffHtml(t) {
+    return diffRows(t.diff, pathOf(t)) + tailOf(t.diff);
+  }
+
+  // ---------- reads: the server worked out which lines of which file a call read; this only draws them
+  function hasViews(t) { return !!(t && t.views && t.views.length); }
+  function hasGitDiff(t) { return !!(t && t.gitdiff && t.gitdiff.length); }
+  function mergeRanges(rs) {  // sorted, touching ones joined: [55,60],[59,70] -> [55,70]
+    rs = (rs || []).slice().sort(function (a, b) { return a[0] - b[0] || a[1] - b[1]; });
+    var out = [];
+    rs.forEach(function (r) {
+      if (out.length && r[0] <= out[out.length - 1][1] + 1) out[out.length - 1][1] = Math.max(out[out.length - 1][1], r[1]);
+      else out.push([r[0], r[1]]);
+    });
+    return out;
+  }
+  function viewBlocks(t) {  // one block per stretch a call read: same file and line windows that touch share a block
+    var out = [];
+    (t.views || []).forEach(function (v) {
+      var from = v.from, to = v.from + v.lines.length - 1, path = short(v.path);
+      var b = out.filter(function (x) { return x.path === path && from <= x.to + 1 && to >= x.from - 1; })[0];
+      if (b) { b.views.push(v); b.from = Math.min(b.from, from); b.to = Math.max(b.to, to); }
+      else out.push({ path: path, from: from, to: to, views: [v] });
+    });
+    return out;
+  }
+  function blockRanges(b) {
+    var rs = [];
+    b.views.forEach(function (v) { rs = rs.concat(v.ranges || []); });
+    return mergeRanges(rs);
+  }
+  function blockView(b) { return b.views.slice().sort(function (a, c) { return c.lines.length - a.lines.length; })[0]; }
+  function rangeCount(rs) { var n = 0; (rs || []).forEach(function (r) { n += r[1] - r[0] + 1; }); return n; }
+  function rangeText(rs, grep) {  // what the command read, in lines: "line 12", "lines 55–91", "16 lines in 12 places"
+    if (!rs || !rs.length) return "the file";
+    if (rs.length === 1) return rs[0][0] === rs[0][1] ? "line " + rs[0][0] : "lines " + rs[0][0] + "–" + rs[0][1];
+    return rangeCount(rs) + " lines in " + rs.length + " places";
+  }
+  function viewLabel(v, rs) {  // "... · sed": the lines, then the command that asked for them
+    var txt = (rs.length === 1 && rs[0][0] <= 1 && rs[0][1] >= v.total)
+      ? "the whole file · " + v.total + (v.total === 1 ? " line" : " lines") : rangeText(rs, v.how === "grep");
+    return txt + (v.how === "grep" ? " matched by grep" : v.how ? " · " + v.how : "");
+  }
+  function viewRows(v, lang, rs, ctx, cap) {
+    // ctx === null: show the whole window the server sent. A number: keep only the read lines plus that many
+    // unchanged lines around them. cap keeps a Log entry short. Either way every line the view leaves out gets
+    // a marker naming the numbers it covers, so what is not on screen is never mistaken for what is.
+    var first = v.from, n = v.lines.length, keep = [], read = [], i;
+    for (i = 0; i < n; i++) { keep.push(ctx === null); read.push(false); }  // read: the lines the command asked for
+    (rs || v.ranges || []).forEach(function (r) {
+      for (var k = Math.max(r[0], first) - first; k <= Math.min(r[1], first + n - 1) - first; k++) {
+        if (k >= 0 && k < n) keep[k] = read[k] = true;
+      }
+    });
+    if (ctx) {
+      var hot = keep.slice();
+      for (i = 0; i < n; i++) if (hot[i]) for (var d = 1; d <= ctx; d++) {
+        if (i - d >= 0) keep[i - d] = true;
+        if (i + d < n) keep[i + d] = true;
+      }
+    }
+    // Never fold a gap of fewer than four lines inside the window the server sent: those lines show,
+    // just unmarked, instead of getting a "not shown" each of their own.
+    for (i = 0; i < n;) {
+      if (keep[i]) { i++; continue; }
+      var j = i;
+      while (j < n && !keep[j]) j++;
+      if (j - i < 4) for (var k = i; k < j; k++) keep[k] = true;
+      i = j;
+    }
+    var runs = [];
+    for (i = 0; i < n; i++) {
+      if (!keep[i]) continue;
+      var from = i;
+      while (i + 1 < n && keep[i + 1]) i++;
+      runs.push([from, i]);
+    }
+    var html = "", prev = 0, rows = 0;
+    for (i = 0; i < runs.length && (!cap || rows < cap); i++) {
+      var a = runs[i][0], b = runs[i][1];
+      if (cap && b - a + 1 > cap - rows) b = a + (cap - rows) - 1;
+      var lo = first + a, hi = first + b;
+      if (lo > prev + 1) html += '<div class="gap q">lines ' + (prev + 1) + "–" + (lo - 1) + " not shown</div>";
+      html += codeRowsR(v.lines.slice(a, b + 1), lang, "", lo, read.slice(a, b + 1));
+      prev = hi;
+      rows += b - a + 1;
+    }
+    if (prev < v.total) {
+      var last = first + n - 1;  // the last line the server put in this window
+      if (prev < last && v.total - prev < 4) {  // the part left over is too short to fold: show it
+        var upto = Math.min(last, v.total);
+        html += codeRowsR(v.lines.slice(prev - first + 1, upto - first + 1), lang, "", prev + 1,
+                          read.slice(prev - first + 1, upto - first + 1));
+        prev = upto;
+      }
+      if (prev < v.total) html += '<div class="gap q">lines ' + (prev + 1) + "–" + v.total + " not shown</div>";
+    }
+    if (v.note && !/^showing lines/.test(v.note)) html += tailLine(v.note);
+    return html;
+  }
+
+  // =====================================================================================================
+  // Follow stage: one tab per thing the agent works on; the view follows whatever it touches last.
+  // =====================================================================================================
+  var T = null;   // stage state
+  var vjump = $("vjump");
+  function resetStage() {
+    T = { targets: new Map(), focus: null, pinned: null, deskSeen: false, term: null };
+    views.textContent = "";
+    views.appendChild(vjump);
+    vjump.classList.remove("on");
+    Array.prototype.slice.call(tabsEl.querySelectorAll(".tab")).forEach(function (x) { x.remove(); });
+    win.classList.remove("pinned");
+  }
+  function target(key, icon, title, make) {
+    var g = T.targets.get(key);
+    if (!g) {
+      g = { key: key, view: make(), tab: el("button", "tab", '<span class="ti"></span><span class="tt"></span>') };
+      if (key !== "desktop") watchScroll(g.view);
+      views.appendChild(g.view);
+      tabsEl.insertBefore(g.tab, $("resume"));
+      g.tab.addEventListener("click", function () { T.pinned = key; win.classList.add("pinned"); show(); });
+      T.targets.set(key, g);
+      while (T.targets.size > 6) {  // keep the strip short: drop the oldest tab that isn't on screen
+        var old = Array.from(T.targets.values()).find(function (x) { return x.key !== T.focus && x.key !== T.pinned && x.key !== "desktop"; });
+        if (!old) break;
+        old.view.remove(); old.tab.remove(); T.targets.delete(old.key);
+      }
+    }
+    g.tab.querySelector(".ti").textContent = icon;
+    g.tab.querySelector(".tt").textContent = title;
+    g.tab.title = title;
+    return g;
+  }
+  function focusOn(key) { if (mode === "live") { T.focus = key; show(); } }
+  function show() {
+    var key = T.pinned || T.focus;
+    T.targets.forEach(function (g) {
+      var on = g.key === key;
+      g.view.classList.toggle("on", on);
+      g.tab.classList.toggle("on", on);
+    });
+    var cur = T.targets.get(key);
+    if (cur) place(cur.view);
+    showJump();
+    if (cur && tabsEl.scrollWidth > tabsEl.clientWidth) {  // a narrow window scrolls the strip: keep this tab in it
+      var tr = cur.tab.getBoundingClientRect(), sr = tabsEl.getBoundingClientRect();
+      if (tr.left < sr.left || tr.right > sr.right) tabsEl.scrollLeft += tr.left - sr.left - (sr.width - tr.width) / 2;
+    }
+    if (key === "desktop") { ensureDesk(); fitDesk(); }
+  }
+  function busy(key, on) { var g = T.targets.get(key); if (g) g.tab.classList.toggle("busy", !!on); }
+  // Scrolling a view. It follows its end (the command running now, its newest output, the line being typed) until
+  // the person scrolls up in it, and follows again once they scroll back down to the end (or press "↓ Latest").
+  // A read or a page lands on a chosen spot instead (jumpTo). A hidden view (display: none) cannot scroll, so the
+  // place it should be is kept and applied when its tab comes on (show -> place).
+  function atEnd(v) { return v.scrollTop + v.clientHeight >= v.scrollHeight - 30; }
+  function watchScroll(v) {
+    v.follow = true;
+    v.addEventListener("scroll", function () {
+      if (v.autoTop != null && Math.abs(v.scrollTop - v.autoTop) <= 1) return;  // where place() put it
+      if (!v.classList.contains("on")) return;  // hiding a view resets its scroll; that is not the person
+      v.autoTop = null;
+      v.keepAt = null;
+      v.keepTop = v.scrollTop;
+      v.follow = atEnd(v);
+      v.userUp = !v.follow;
+      showJump();
+    }, { passive: true });
+  }
+  function place(v) {  // put an on-screen view where it should be: its end while following, else the spot kept
+    if (v.follow === undefined || !v.classList.contains("on")) return;
+    var top = v.follow ? v.scrollHeight : v.keepAt != null ? (typeof v.keepAt === "function" ? v.keepAt() : v.keepAt) : v.keepTop;
+    if (top == null) return;
+    v.scrollTop = top;
+    v.autoTop = v.scrollTop;
+  }
+  function jumpTo(v, at) {  // land on a chosen spot (a number, or a function measuring it once the view is shown)
+    v.follow = false; v.userUp = false; v.keepAt = at;
+    place(v);
+    showJump();
+  }
+  function follows(v) { v.follow = true; v.userUp = false; v.keepAt = null; place(v); showJump(); }
+  function showJump() {  // "↓ Latest" while the person has scrolled up in the view on screen
+    var cur = T && T.targets.get(T.pinned || T.focus);
+    vjump.classList.toggle("on", !!(cur && cur.view.userUp));
+  }
+  vjump.addEventListener("click", function (e) {
+    e.stopPropagation();
+    var cur = T && T.targets.get(T.pinned || T.focus);
+    if (cur) follows(cur.view);
+  });
+  function stick(view, fn) {  // redraw a view; a following view stays at its end
+    fn();
+    if (view.follow !== false) place(view);
+  }
+
+  // the live desktop (the Computer Agent's viewer for this chat)
+  function ensureDesk() {
+    var g = T.targets.get("desktop");
+    if (!g || g.frame || !DESKTOP) return;
+    g.frame = el("iframe");
+    g.frame.title = "Sandbox desktop";
+    g.frame.allow = "clipboard-read; clipboard-write; fullscreen";
+    g.frame.src = DESKTOP;
+    g.frame.onload = function () { var w = g.view.querySelector(".wait"); if (w) w.remove(); };
+    g.view.appendChild(g.frame);
+    fitDesk();
+  }
+  // Watch's stage (#fill=1) is wide and short. The viewer is a 16:10 screen under its toolbar, as wide as its frame,
+  // so a frame as wide as the stage cut the bottom of the desktop off (10-26, the user: "resize the window for the
+  // desktop where it fits"). Here the frame is the biggest one the stage holds that shows all of it, centred.
+  // DESK_CHROME: the viewer's toolbar and border (46 px measured in Chrome on 10-26, its screen 2 px narrower than
+  // the frame) plus 2 px so rounding never brings a scrollbar. Its agent-checklist panel under the screen, when the
+  // agent has one, scrolls inside the frame.
+  var DESK_CHROME = 48;
+  function fitDesk() {
+    var g = fill && T && T.targets.get("desktop");
+    if (!g || !g.frame) return;
+    var W = views.clientWidth, H = views.clientHeight;
+    if (!W || !H) return;
+    var w = Math.floor(Math.min(W, Math.max(160, (H - DESK_CHROME) * 16 / 10)));
+    var h = Math.min(H, Math.ceil(w * 10 / 16) + DESK_CHROME);
+    var top = Math.max(0, Math.floor((H - h) / 2));
+    if (g.fit && Math.abs(g.fit.w - w) < 2 && Math.abs(g.fit.h - h) < 2 && g.fit.top === top) return;
+    g.fit = { w: w, h: h, top: top };
+    g.frame.style.width = w + "px";
+    g.frame.style.height = h + "px";
+    g.frame.style.marginTop = top + "px";
+  }
+  if (fill) {
+    addEventListener("resize", fitDesk);
+    try { new ResizeObserver(fitDesk).observe(views); } catch (e) { /* the resize event still fits it */ }
+  }
+  function deskHeight() {
+    var w = views.clientWidth || win.clientWidth || 760;
+    return Math.round(w * 10 / 16) + 54;  // the viewer: its toolbar plus a 16:10 screen (533 px at 778 wide)
+  }
+  // The desktop sets the stage's size (16:10 plus the viewer's toolbar) from the first desktop command on, so
+  // switching between the desktop and code doesn't make the reply jump.
+  function sizeStage() {
+    if (T && T.deskSeen) { document.documentElement.style.setProperty("--stage-h", deskHeight() + "px"); report(); }
+  }
+  addEventListener("resize", sizeStage);
+  addEventListener("message", function (e) {  // the viewer knows its own height; only trust it while it's on screen
+    var g = T && T.targets.get("desktop");
+    if (!g || !g.frame || e.source !== g.frame.contentWindow || !e.data || e.data.type !== "iframe:height") return;
+    if (fill) return;   // Watch: fitDesk() sizes the frame to the stage, not to the viewer
+    if (!g.view.classList.contains("on")) return;
+    var h = e.data.height | 0;
+    if (h >= 200 && h <= 1400 && Math.abs(h - deskHeight()) < 200) {
+      document.documentElement.style.setProperty("--stage-h", h + "px");
+      report();
+    }
+  });
+
+  function stageTool(t) {
+    var verb = deskVerb(t);
+    if (verb) {
+      if (!DESKTOP) return stageTerm(t);
+      var g = target("desktop", "▣", "Desktop", function () {
+        return el("div", "view vdesk", '<div class="wait">Opening the desktop…</div>');
+      });
+      if (!T.deskSeen) { T.deskSeen = true; sizeStage(); }
+      busy("desktop", t.status === "running" || t.status === "streaming");
+      if (verb !== "done" && t.focused !== "desktop") { t.focused = "desktop"; focusOn("desktop"); }
+      return;
+    }
+    switch (t.name) {
+      case "write": case "edit": case "read": stageFile(t); break;
+      case "shell": case "grep": case "glob": case "execute": stageTerm(t); break;
+      case "webfetch": case "websearch": stageWeb(t); break;
+    }
+    if (hasViews(t)) stageViews(t);  // the file a call read is worth more attention than the command that read it
+    else if (hasGitDiff(t)) stageGitDiff(t);  // a git diff/show: the changed files beat the raw output
+  }
+
+  function stageViews(t) {  // the file as the agent saw it, with the lines its command asked for marked
+    var last = null;
+    viewBlocks(t).forEach(function (b) {
+      var v = blockView(b), rs = blockRanges(b), key = "file:" + b.path;
+      var g = target(key, "▤", base(b.path) + (b.views.length > 1 ? " ×" + b.views.length : ""), function () {
+        var x = el("div", "view vfile");
+        x.innerHTML = '<div class="fh"></div><div class="code"></div>';
+        return x;
+      });
+      busy(key, false);
+      stick(g.view, function () {
+        g.view.querySelector(".fh").innerHTML = "<b>" + esc(b.path) + '</b><span class="rd">' + esc(viewLabel(v, rs)) +
+          (v.now ? " · the file as it is now" : "") + "</span>";
+        g.view.querySelector(".code").innerHTML = viewRows(v, langOf(b.path), rs, null, 0);
+      });
+      var rd = g.view.querySelector(".ln.rd");   // land on the lines it read, not on the top of the file
+      if (rd && !t.viewJump) {
+        t.viewJump = true;
+        jumpTo(g.view, (function (view, row) { return function () { return Math.max(0, row.offsetTop - view.clientHeight * 0.35); }; })(g.view, rd));
+      }
+      last = key;
+    });
+    if (last && t.focused !== last) { t.focused = last; focusOn(last); }
+  }
+
+  function stageGitDiff(t) {  // a git diff/show call: one tab per changed file, drawn like the patches on an edit tab
+    var last = null;
+    t.gitdiff.forEach(function (f) {
+      var key = "file:" + short(f.path);
+      var g = target(key, "✎", base(f.path), function () {
+        var x = el("div", "view vfile");
+        x.innerHTML = '<div class="fh"></div><div class="code"></div>';
+        return x;
+      });
+      busy(key, false);
+      stick(g.view, function () {
+        g.view.querySelector(".fh").innerHTML = "<b>" + esc(short(f.path)) + "</b>" + diffStat(f);
+        g.view.querySelector(".code").innerHTML = diffRows(f, f.path) +
+          (t.gitnote ? tailLine("(" + t.gitnote + ")") : "");
+      });
+      last = key;
+    });
+    if (last && t.focused !== last) { t.focused = last; focusOn(last); }
+  }
+
+  function stageFile(t) {
+    var pv = inputOf(t, "path") || inputOf(t, "filePath");
+    if (!pv || !pv.v || !pv.done) return;  // a path still being typed names no file: keep the last view rather than open a tab per fragment
+    var p = pv.v;
+    var key = "file:" + short(p);   // the same file, whether the call named it absolutely or from the session folder
+    var g = target(key, t.name === "read" ? "▤" : "✎", base(p), function () {
+      var v = el("div", "view vfile");
+      v.innerHTML = '<div class="fh"></div><div class="code"></div>';
+      return v;
+    });
+    var lang = langOf(p), code = g.view.querySelector(".code"), fh = g.view.querySelector(".fh");
+    var typing = t.status === "streaming";
+    busy(key, typing || t.status === "running");
+    if (t.focused !== key) { t.focused = key; follows(g.view); focusOn(key); }
+    stick(g.view, function () {
+      if (hasDiff(t)) {  // the patch the server worked out: real line numbers, unchanged context around it
+        fh.innerHTML = "<b>" + esc(short(p)) + "</b>" + diffStat(t.diff);
+        code.innerHTML = diffHtml(t);
+        if (typing) caretLast(code, t.name === "write");  // a typed write reaches the bottom of what is shown
+        return;
+      }
+      if (t.name === "write") {
+        var c = inputOf(t, "content");
+        var lines = c ? c.v.split("\n") : [""];
+        fh.innerHTML = "<b>" + esc(short(p)) + "</b><span>" + (typing ? "writing · " : "") + lines.length + " lines</span>";
+        var from = typing ? Math.max(0, lines.length - 120) : 0;   // while typing, only the last screenful is redrawn
+        code.innerHTML = (from ? '<div class="gap">' + from + " lines above</div>" : "") + codeRows(lines.slice(from), lang, "", from + 1);
+        if (typing) caretLast(code);
+      } else if (t.name === "edit") {
+        var o = inputOf(t, "oldString"), n = inputOf(t, "newString");
+        var ol = o ? o.v.split("\n") : [], nl = n ? n.v.split("\n") : [];
+        fh.innerHTML = "<b>" + esc(short(p)) + "</b><span>" + (typing ? "editing · " : "edit · ") + "−" + ol.length + " +" + nl.length + "</span>";
+        code.innerHTML = codeRows(ol, lang, "d", "") + codeRows(nl, lang, "a", "");
+        code.querySelectorAll(".no").forEach(function (x) { x.textContent = ""; });
+        if (typing) caretLast(code);
+      } else if (hasViews(t)) {
+        // a read the server turned into a file view: stageViews draws the file with those lines marked
+      } else {  // read: "Read file X, lines a-b" then "n: text"
+        var out = t.out || "", rows = [], nos = [];
+        out.split("\n").forEach(function (l) { var m = /^\s*(\d+): ?(.*)$/.exec(l); if (m) { nos.push(+m[1]); rows.push(m[2]); } });
+        var a = t.input && typeof t.input === "object" ? t.input : {};
+        var span = rows.length ? "lines " + nos[0] + "–" + nos[nos.length - 1] : (t.status === "completed" ? "" : "reading…");
+        fh.innerHTML = "<b>" + esc(short(p)) + "</b><span>" + span + "</span>";
+        code.innerHTML = rows.length ? codeRows(rows, lang, "", nos) : (t.status === "completed" ? '<div class="gap">' + esc(out.slice(0, 300)) + "</div>" : "");
+        if (rows.length && t.status === "completed" && !t.scrolled) { t.scrolled = true; jumpTo(g.view, 0); }
+      }
+      if (t.diff && (t.name === "write" || t.name === "edit")) code.insertAdjacentHTML("beforeend", tailOf(t.diff));
+    });
+  }
+
+  function stageTerm(t) {
+    var g = target("term", "$", "Terminal", function () {
+      var v = el("div", "view vterm");
+      return v;
+    });
+    var e = t.termEl;
+    if (!e) {
+      e = t.termEl = el("div", "entry");
+      e.innerHTML = '<div class="cmd"></div><div class="res"></div>';
+      g.view.appendChild(e);
+    }
+    var cmd = e.firstChild, res = e.lastChild, c;
+    if (t.name === "grep" || t.name === "glob") {
+      cmd.className = "cmd grep";
+      c = inputOf(t, "pattern");
+      cmd.textContent = (t.name === "glob" ? "glob " : "grep ") + (c ? c.v : "") + (pathOf(t) ? "  " + short(pathOf(t)) : "");
+    } else if (t.name === "execute") {
+      cmd.className = "cmd code";
+      c = inputOf(t, "code"); cmd.textContent = c ? c.v : "";
+    } else {
+      cmd.className = "cmd";
+      c = inputOf(t, "command"); cmd.textContent = c ? short(c.v) : "";
+    }
+    var running = t.status === "running" || t.status === "streaming";
+    busy("term", running);
+    stick(g.view, function () {
+      var o = t.status === "error" ? (t.err || t.out || "") : (t.out || "");
+      res.className = "res" + (t.status === "error" ? " err" : "");
+      if (o) res.textContent = tail(o, 40);
+      else res.innerHTML = running ? '<span class="run">running…</span>' : "";
+    });
+    if (!hasViews(t) && !hasGitDiff(t) && t.focused !== "term") { t.focused = "term"; focusOn("term"); }  // a read or a git diff shows the file, not the command
+  }
+
+  function stageWeb(t) {
+    var g = target("web", "◍", "Web", function () {
+      var v = el("div", "view vweb");
+      v.innerHTML = '<div class="url"></div><div class="page"></div>';
+      return v;
+    });
+    var url = g.view.querySelector(".url"), page = g.view.querySelector(".page");
+    var u = inputOf(t, "url"), q = inputOf(t, "query"), label;
+    if (t.name === "websearch") {
+      label = "search: " + (q ? q.v : "");
+      url.innerHTML = "<b>⌕</b><span>" + esc(q ? q.v : "") + "</span>";
+    } else {
+      var host = "";
+      try { host = u ? new URL(u.v).host : ""; } catch (e) { host = u ? u.v : ""; }
+      label = host || "page";
+      url.innerHTML = (u && /^https:/.test(u.v) ? "<b>🔒</b>" : "<b>◍</b>") + "<span>" + esc(u ? u.v : "") + "</span>";
+    }
+    g.tab.querySelector(".tt").textContent = label;
+    g.tab.title = label;
+    var running = t.status === "running" || t.status === "streaming";
+    busy("web", running);
+    if (t.webShown !== t.status) {
+      t.webShown = t.status;
+      if (t.status === "completed") { page.innerHTML = t.out ? pageHtml(t.out) : "(empty page)"; jumpTo(g.view, 0); }
+      else if (t.status === "error") page.textContent = t.err || "Failed";
+      else page.innerHTML = '<span class="loading">Loading…</span>';
+    }
+    if (t.focused !== "web") { t.focused = "web"; focusOn("web"); }
+  }
+
+  // What webfetch hands the model is markdown; read it as a page: headings, links and bold, images as a marker.
+  function pageHtml(text) {
+    return esc(text).split("\n").map(function (l) {
+      var h = /^(#{1,4})\s+(.*)$/.exec(l);
+      l = (h ? h[2] : l)
+        .replace(/!\[([^\]]*)\]\([^)]*\)/g, '<span class="img">[image$1]</span>'.replace("$1", ""))
+        .replace(/\[([^\]]*)\]\(([^)\s]*)[^)]*\)/g, '<u title="$2">$1</u>')
+        .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+        .replace(/\\([-\\`*_{}\[\]()#+.!])/g, "$1");
+      return h ? '<div class="h' + h[1].length + '">' + l + "</div>" : l;
+    }).join("\n").replace(/\n{3,}/g, "\n\n");
+  }
+
+  // thinking and commentary: a caption under the view; the whole view only before the first tool
+  function stageText(p) {
+    var cap = $("caption"), txt = p.text.replace(/\*\*|`/g, "").replace(/\s+/g, " ").trim();
+    if (!txt) return;
+    cap.className = p.kind === "think" ? "" : "say";
+    cap.querySelector(".cl").textContent = p.kind === "think" ? (p.done ? "thought" : "thinking") : "says";
+    cap.querySelector(".ct").textContent = txt.length > 260 ? "…" + txt.slice(-260) : txt;
+    if (T.focus && T.focus !== "think") return;
+    var g = target("think", "…", "Thinking", function () { return el("div", "view vthink"); });
+    stick(g.view, function () {
+      var html = "";
+      S.steps.forEach(function (s) { s.parts.forEach(function (x) {
+        if (x.kind === "think") html += esc(x.text.trim()) + "\n\n";
+        else if (x.text.trim()) html += '<div class="say">' + md(x.text.trim()) + "</div>";
+      }); });
+      g.view.innerHTML = html;
+    });
+    busy("think", !p.done);
+    if (!T.focus) focusOn("think");
+  }
+  function stageNote(level, text) {
+    var cap = $("caption");
+    cap.className = level || "";
+    cap.querySelector(".cl").textContent = level === "ask" ? "asking" : level === "err" ? "problem" : "note";
+    cap.querySelector(".ct").textContent = text;
+  }
+
+  // =====================================================================================================
+  // Log: every step, part and tool call
+  // =====================================================================================================
+  function tail(s, lines) {
+    var L = String(s || "").replace(/\s+$/, "").split("\n");
+    return L.length > lines ? "… " + (L.length - lines) + " lines\n" + L.slice(-lines).join("\n") : L.join("\n");
+  }
+  var ICON = { write: "✎", edit: "✎", read: "▤", shell: "$", grep: "⌕", glob: "⌕", webfetch: "↓", websearch: "⌕", question: "?", execute: "▷" };
+  function summary(t) {
+    var a = t.input && typeof t.input === "object" ? t.input : null, v;
+    switch (t.name) {
+      case "shell": v = inputOf(t, "command"); return v ? short(v.v.split("\n")[0]) : "";
+      case "read":
+        var p = short(pathOf(t));
+        if (a && (a.offset != null || a.limit != null)) { var f = (a.offset || 0) + 1; p += "  · " + f + (a.limit ? "–" + (f + a.limit - 1) : "+"); }
+        return p;
+      case "write": case "edit": var f = pathOf(t); return f ? short(f) : "";  // no dot while the name is still being typed
+      case "grep": case "glob": v = inputOf(t, "pattern"); return (v ? v.v : "") + (pathOf(t) ? "  in " + short(pathOf(t)) : "");
+      case "webfetch": v = inputOf(t, "url"); return v ? v.v : "";
+      case "websearch": v = inputOf(t, "query"); return v ? v.v : "";
+      case "question": return a && a.questions && a.questions[0] ? a.questions[0].question || "" : "";
+      case "execute": v = inputOf(t, "code"); return v ? v.v.split("\n")[0] : "";
+    }
+    if (a) { try { return JSON.stringify(a).slice(0, 200); } catch (e) { return ""; } }
+    return typeof t.raw === "string" ? t.raw.slice(0, 200) : "";
+  }
+  function logViews(t, lang) {  // the Log's side of a read: what was read, and the lines themselves when it opened
+    var html = "";
+    viewBlocks(t).forEach(function (b) {
+      var v = blockView(b), rs = blockRanges(b), marked = rangeCount(rs);
+      html += '<div class="hk">' + esc(b.path) + " · " + esc(viewLabel(v, rs)) +
+              (v.now ? " <i>the file as it is now</i>" : "") + "</div>";
+      if (t.open) html += viewRows(v, lang, rs, 3, 200);
+      // a small read shows inline; a grep gets the same 3 lines of context the opened view has, because
+      // a matched line alone says little
+      else if (marked <= 6) html += viewRows(v, lang, rs, v.how === "grep" ? 3 : 0, 12);
+      else html += '<div class="gap">' + esc(rangeText(rs)) + " read · show</div>";
+    });
+    return html;
+  }
+  function gitFileHead(f) {  // "src/a.py · −1 +2": the file the patch touches and what it changed
+    return '<div class="hk gf">' + esc(f.path) + ' · <span class="m">−' + (f.removed | 0) +
+           '</span> <span class="p">+' + (f.added | 0) + "</span></div>";
+  }
+  function logGitDiff(t) {  // the Log's side of a git diff/show: a line per changed file, the hunks when opened
+    var total = 0;
+    t.gitdiff.forEach(function (f) { f.hunks.forEach(function (h) { total += h.lines.length; }); });
+    var html = "";
+    if (!t.open && total > 24) {  // a big patch: name the files, count the changes, let the click show the rest
+      t.gitdiff.forEach(function (f) { html += gitFileHead(f); });
+      html += '<div class="gap">' + total + " lines of changes · show</div>";
+    } else {
+      t.gitdiff.forEach(function (f) { html += gitFileHead(f) + diffRows(f, f.path); });
+    }
+    if (t.gitnote) html += tailLine("(" + t.gitnote + ")");
+    return html;
+  }
+  function drawLogCode(t) {
+    var lang = langOf(pathOf(t)), typing = t.status === "streaming", html = "", n = 0;
+    if (hasDiff(t)) {  // the patch as the server worked it out: hunks with line numbers and word marks
+      var rows = 0;
+      t.diff.hunks.forEach(function (h) { rows += h.lines.length; });
+      html = !typing && !t.open && rows > 24
+        ? diffStat(t.diff) + '<div class="gap">' + rows + " lines of changes · show</div>" : diffHtml(t);
+    } else if (hasViews(t)) {
+      html = logViews(t, lang);   // the file it opened, the read lines marked
+    } else if (hasGitDiff(t)) {
+      html = logGitDiff(t);       // the files a git diff/show changed
+    } else if (t.name === "write") {
+      var c = inputOf(t, "content");
+      var lines = c ? c.v.split("\n") : [];
+      n = lines.length;
+      if (typing) { var from = Math.max(0, n - 16); html = (from ? '<div class="gap">' + from + " lines above</div>" : "") + codeRows(lines.slice(from), lang, "", from + 1); }
+      else html = t.open || n <= 6 ? codeRows(lines, lang) : '<div class="gap">' + n + " lines · show</div>";
+    } else if (t.name === "edit") {
+      var o = inputOf(t, "oldString"), nn = inputOf(t, "newString");
+      var ol = o ? o.v.split("\n") : [], nl = nn ? nn.v.split("\n") : [];
+      n = ol.length + nl.length;
+      html = !typing && !t.open && n > 24 ? '<div class="gap">−' + ol.length + " +" + nl.length + " lines · show</div>"
+        : codeRows(ol, lang, "d", "") + codeRows(nl, lang, "a", "");
+    } else if (t.name === "execute") {
+      var x = inputOf(t, "code");
+      html = x && (t.open || t.status !== "completed") ? codeRows(x.v.split("\n"), "c") : "";
+    }
+    if (!hasDiff(t) && t.diff && (t.name === "write" || t.name === "edit")) html += tailOf(t.diff);  // why there is no patch, or what is still below
+    t.code.innerHTML = html;
+    if (t.name === "edit") t.code.querySelectorAll(".ln.a .no, .ln.d .no").forEach(function (e) { e.textContent = ""; });
+    if (typing) caretLast(t.code);
+  }
+  function drawTool(t) {
+    t.el.className = "p tool " + (t.status || "running") + (t.open ? " open" : "");
+    t.tn.textContent = t.name;
+    t.ic.textContent = t.status === "completed" ? "✓" : t.status === "error" ? "✗" : (ICON[t.name] || "•");
+    var s = summary(t);
+    t.ts.textContent = s; t.ts.title = s;
+    var dur = t.t1 && t.t0 ? fmt(t.t1 - t.t0) : "";
+    t.st.textContent = t.status === "running" ? "" : (t.status === "completed" || t.status === "error") ? dur : "typing…";
+    drawLogCode(t);
+    var o = t.status === "error" ? (t.err || t.out || "") : (t.out || "");
+    var always = t.status === "error" || (t.name === "shell" && !deskVerb(t) && !hasViews(t) && !hasGitDiff(t));  // a read view or a git diff already shows what the command printed
+    t.outEl.className = "out" + (always ? "" : " more");
+    t.outEl.textContent = o ? (t.open ? o : tail(o, t.name === "shell" ? 6 : 12)) : "";
+    t.outEl.style.display = o ? "" : "none";
+    if (mode === "live") stageTool(t);
+  }
+  function tool(id, msg) {
+    var t = S.tools.get(id);
+    if (t) return t;
+    var st = step(msg);
+    t = { id: id, name: "tool", status: "streaming", raw: "", input: null, open: false, diff: null, views: null,
+          gitdiff: null, gitnote: "" };
+    t.el = el("div", "p tool");
+    var tl = el("div", "tl");
+    t.ic = el("span", "ic"); t.tn = el("span", "tn"); t.ts = el("span", "ts"); t.st = el("span", "st");
+    tl.append(t.ic, t.tn, t.ts, t.st);
+    t.code = el("div", "code"); t.outEl = el("div", "out");
+    t.el.append(tl, t.code, t.outEl);
+    tl.addEventListener("click", function () { t.open = !t.open; mark(t); });
+    t.code.addEventListener("click", function (e) { if (e.target.classList.contains("gap")) { t.open = true; mark(t); } });
+    S.tools.set(id, t);
+    st.el.appendChild(t.el);
+    return t;
+  }
+  function step(id) {
+    id = id || "?";
+    var s = S.steps.get(id);
+    if (s) return s;
+    s = { id: id, n: ++S.order, parts: new Map(), el: el("div", "step") };
+    s.head = el("div", "sh");
+    s.el.appendChild(s.head);
+    S.steps.set(id, s);
+    logEl.appendChild(s.el);
+    drawStepHead(s);
+    return s;
+  }
+  function drawStepHead(s) {
+    var bits = ['<span class="n">step ' + s.n + "</span>"];
+    if (s.t0) bits.push(new Date(s.t0 - skew).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }));
+    if (s.tokens) {
+      var tk = s.tokens, cache = (tk.cache && tk.cache.read) || 0;
+      bits.push(kfmt((tk.input || 0) + cache) + " read · " + kfmt(tk.output) + " written");
+    }
+    if (s.t0 && s.t1) bits.push(fmt(s.t1 - s.t0));
+    s.head.innerHTML = bits.join(" · ");
+  }
+  function part(stepId, kind, o) {
+    var s = step(stepId), key = kind + ":" + (o || 0), p = s.parts.get(key);
+    if (p) return p;
+    p = { kind: kind, text: "", done: false, open: false, el: el("div", "p " + (kind === "think" ? "think" : "say")) };
+    p.el.addEventListener("click", function () { if (p.done && p.kind === "think") { p.open = !p.open; mark(p); } });
+    s.parts.set(key, p);
+    s.el.appendChild(p.el);
+    return p;
+  }
+  function drawPart(p) {
+    if (p.kind === "think") {
+      p.el.className = "p think" + (p.done ? " fin" : "") + (p.open ? " open" : "");
+      var secs = p.t0 && p.t1 ? " · " + fmt(p.t1 - p.t0) : "";
+      p.el.innerHTML = '<span class="lbl">' + (p.done ? "thought" + secs : "thinking") + "</span>" + esc(p.text.trim());
+      if (!p.done) p.el.classList.add("caret");
+    } else {
+      p.el.innerHTML = md(p.text.replace(/^\s+/, ""));
+      p.el.classList.toggle("caret", !p.done);
+      p.el.style.display = p.text.trim() ? "" : "none";
+    }
+    if (mode === "live") stageText(p);
+  }
+
+  // ---------- drawing is batched per frame (deltas arrive every few ms)
+  function mark(x) { dirty.add(x); if (!frame) frame = requestAnimationFrame(flush); }
+  function flush() {
+    frame = 0;
+    dirty.forEach(function (x) { if (x.tn) drawTool(x); else if (x.kind) drawPart(x); else if (x.head) drawStepHead(x); });
+    dirty.clear();
+    header();
+    if (follow && mode === "live") body.scrollTop = body.scrollHeight;
+    report();
+  }
+
+  // ---------- header + idle caption
+  function activity() {
+    var a = S.active;
+    if (!a) return "";
+    if (a.tn) { var v = deskVerb(a); return v ? "desktop " + v : a.name + (summary(a) ? " · " + summary(a) : ""); }
+    return a.kind === "think" ? "Thinking…" : "Writing…";
+  }
+  function header() {
+    if (!S) return;
+    var model = $("model");
+    if (S.review) {  // watching the reviewer's session: say so where the model would stand
+      model.textContent = "Review · round " + S.review.round;
+      model.className = "model review";
+    } else {
+      model.textContent = S.model || "";
+      model.className = "model";
+    }
+    var steps = S.order, now = Date.now() + skew;
+    if (mode === "live") {
+      $("now").textContent = activity() || (steps ? "" : "Starting…");
+      $("meta").textContent = (steps ? "step " + steps + " · " : "") + (S.since ? fmt(now - S.since) : "");
+    } else if (mode === "past" && !full) {
+      $("now").textContent = "What it did this turn";
+      $("meta").textContent = "";
+    } else {
+      var edits = 0;
+      S.tools.forEach(function (t) { if ((t.name === "write" || t.name === "edit") && t.status === "completed") edits++; });
+      var how = { interrupted: "stopped", failed: "failed" }[S.how] || "";
+      $("now").textContent = [steps + (steps === 1 ? " step" : " steps"), edits ? edits + (edits === 1 ? " file edit" : " file edits") : "", how].filter(Boolean).join(" · ");
+      $("meta").textContent = S.since && S.until ? fmt(S.until - S.since) : "";
+    }
+  }
+  setInterval(function () {
+    if (!S || mode !== "live") return;
+    header();
+    var idle = Date.now() - S.last, a = S.active;
+    if (a && a.tn && a.status === "running") {
+      if (S.waitNote) { S.waitNote = false; }
+      $("now").textContent = activity() + " · " + fmt(Date.now() - a.seen);
+    } else if (idle > 2500 && (!a || a.done !== false)) {
+      S.waitNote = true;
+      // A quiet window says what it waits on (performance handoff 10-23): a pending approval or a compaction is not
+      // "the model", and before the first step the model is reading the prompt.
+      var b = S.blocked;
+      stageNote(b && b.ask ? "ask" : "", b ? b.what + " · " + fmt(Date.now() - b.since)
+        : (!S.order ? "Reading context · " : S.reread ? "Reading the compacted context · " : "Waiting for the model · ") + fmt(idle));
+      $("caption").querySelector(".cl").textContent = b && b.ask ? "asking" : "waiting";
+    }
+  }, 1000);
+
+  // ---------- compaction: what the Code page's overlay shows
+  // While opencode compacts this session the server sends "compact" events (start, the history it reads as tape
+  // lines, the summary as it is written, end, done or fail) and "cprog" (the engine's read/write position). They are
+  // gathered into one state and posted to the Code page ("code:compaction"), at most 4 times a second; the page draws
+  // the overlay. The tape goes once, with the post after it arrives. Times are this browser's clock.
+  var C = null, cTape = null, cLast = 0, cTimer = 0;
+  function cLocal(ms) { return ms ? ms - skew : Date.now(); }
+  function cPost(now) {
+    if (solo || fill) return;
+    var send = function () {
+      cTimer = 0; cLast = Date.now();
+      var msg = { type: "code:compaction", state: C ? JSON.parse(JSON.stringify(C)) : null };
+      if (cTape) { msg.tape = cTape; cTape = null; }
+      try { parent.postMessage(msg, "*"); } catch (e) { /* the page went away */ }
+    };
+    if (now) { clearTimeout(cTimer); send(); return; }
+    if (!cTimer) cTimer = setTimeout(send, Math.max(0, 250 - (Date.now() - cLast)));
+  }
+  function cStart(at) {
+    C = { ph: "read", since: cLocal(at), text: "", prog: null, ssd: 0, sawRead: false, model: S.model || "" };
+  }
+  function cFinish(ph, err) {   // done (the new context is read) or fail; the page plays it out and clears it
+    if (!C) return;
+    C.ph = ph; C.until = Date.now();
+    if (err) C.err = err;
+    cPost(true);
+    C = null;
+  }
+  function cEvent(ev) {
+    switch (ev.ph) {
+      case "start":
+        cStart(ev.t0);
+        apply({ k: "note", text: "Compacting the conversation to fit the context…" });
+        cPost(true);
+        break;
+      case "tape":
+        if (!C) break;
+        cTape = ev.lines || [];
+        cPost(true);
+        break;
+      case "delta":
+        if (!C) cStart();
+        C.ph = "write";
+        C.text += ev.d || "";
+        cPost();
+        break;
+      case "end":
+        if (!C) cStart();
+        C.ph = "readin"; C.ended = Date.now();
+        if (ev.text) C.text = ev.text;
+        C.tokens = ev.tokens || null; C.recent = ev.recent || 0; C.prog = null; C.sawRead = false;
+        apply({ k: "note", text: "Compacted" });
+        cPost(true);
+        break;
+      case "done":
+        cFinish("done");
+        break;
+      case "fail":
+        apply({ k: "note", level: "err", text: "Compaction failed: " + (ev.err || "unknown error") });
+        cFinish("fail", ev.err || "failed");
+        break;
+    }
+  }
+  function cProg(ev) {
+    if (!C) return;
+    var pr = { state: ev.state || null, read: ev.read, total: ev.total, prompt: ev.prompt, cached: ev.cached,
+               gen: ev.gen, rate: ev.rate, pps: ev.pps };
+    if (pr.state === "reading") {
+      // the part the engine already had (its RAM or SSD cache) shows as the first read position of the compaction
+      if (C.ph === "read" && !C.sawRead && pr.read && pr.total && Date.now() - C.since < 120000 && pr.read > pr.total * 0.02)
+        C.ssd = Math.max(pr.cached || 0, pr.read);
+      C.sawRead = true;
+    }
+    if (C.ph === "read" && pr.state === "generating" && C.sawRead) C.ph = "write";
+    C.prog = pr;
+    if (C.ph === "readin" && C.sawRead && pr.state === "generating") { cFinish("done"); return; }
+    cPost();
+  }
+
+
+  // ---------- review: what the Code page's review overlay shows
+  // A review window (S.review: one of the reviewer's sessions) posts its round to the Code page ("code:review"): what
+  // Code mode gave the reviewer (the brief, from the snapshot), the engine's progress while it reads it (cprog), the
+  // commands it runs, the worksheet rows as it writes them (TAG | item | status | evidence, read the way the Code pipe
+  // reads them) and the verdict. A builder window whose prompt is a review's send-back posts the findings it got
+  // ("code:review-handback"). Only while the turn runs, at most 4 posts a second.
+  var R = null, rLast = 0, rTimer = 0, rHanded = false;
+  var R_ROWS = {   // the Code pipe's REVIEW_ROWS: which statuses make a worksheet line a finding, and of what kind
+    ASKED: [[/missing|half|partial|not built|narrower|simpler/, "not built"]],
+    HAD: [[/gone|hard to find|removed|missing|hidden|no label/, "removed"]],
+    ADDED: [[/made up|made-up|not asked|unasked|invented|engineer/, "invented"]],
+    TESTING: [[/left/, "left behind"]],
+    CLAIM: [[/false|not true|untrue/, "not true"], [/admit|not done|not tested|gave up|given up|skipp/, "given up"]]
+  };
+  function rBrief(text) {   // the brief as the rows the overlay reads through, each weighted by its size
+    text = String(text || "");
+    var sec = function (re) { var m = re.exec(text); return m ? m[1] : ""; };
+    var reqs = sec(/Conversation context, oldest first[^\n]*\n([\s\S]*?)(?:\n\n|$)/);
+    var task = sec(/Current task to review:\n([^\n]*)/);
+    var answers = sec(/Questions the user was asked, with their answers:\n([\s\S]*?)(?:\n\n|$)/);
+    var summary = sec(/The engineer's closing summary \(claims to check, not facts\):\n([\s\S]*?)(?:\n\n|$)/);
+    var files = sec(/Files this turn changed: ([^\n]*)/);
+    var before = sec(/What the project had before[^\n]*\n([\s\S]*?)(?:\n\n|$)/);
+    var record = sec(/Code mode's own record of this turn([\s\S]*?)(?:\n\n|$)/);
+    var prev = sec(/A first review found the points below[^\n]*\n((?:- [^\n]*\n?)+)/);
+    var plural = function (n, w) { return n + " " + w + (n === 1 ? "" : "s"); };
+    var nReq = (reqs.match(/^\d+\. /gm) || []).length, nAns = (answers.match(/^> /gm) || []).length;
+    var nFiles = files ? files.split(", ").length : 0, nPrev = (prev.match(/^- /gm) || []).length;
+    var rows = [{ k: "rules", s: "The reviewer's standing instructions and tools", w: 36000 },
+                { k: "task", s: "Current task to review: " + (task || "(not given)"), w: 200 }];
+    if (nReq) rows.push({ k: "asked", s: plural(nReq, "request") + ", oldest first", w: reqs.length });
+    if (nAns) rows.push({ k: "answers", s: plural(nAns, "question") + " the user was asked, with their answers", w: answers.length });
+    rows.push({ k: "claims", s: "The builder's closing summary: claims to check, not facts", w: summary.length + 100 });
+    if (nFiles) rows.push({ k: "files", s: plural(nFiles, "file") + " this turn changed", w: files.length });
+    if (before) rows.push({ k: "before", s: "What the project had before this turn", w: before.length });
+    if (record) rows.push({ k: "record", s: "Code mode's own record of this turn", w: record.length });
+    if (nPrev) rows.push({ k: "recheck", s: "The " + plural(nPrev, "point") + " the first review found, to recheck", w: prev.length });
+    rows.push({ k: "reply", s: "Answer: worksheet lines, then REVIEW: PASS, FAIL or INCOMPLETE", w: 600 });
+    return { rows: rows, recheck: nPrev > 0 };
+  }
+  function rRows(text) {   // worksheet lines the way the Code pipe's review_rows reads them
+    var out = [];
+    String(text || "").split("\n").forEach(function (line) {
+      var cells = line.trim().replace(/^\|+|\|+$/g, "").split("|").map(function (c) { return c.replace(/^[\s`*]+|[\s`*]+$/g, ""); });
+      var tag = cells.length ? cells[0].replace(/^[\s\-*•\d.)]+/, "").toUpperCase() : "";
+      if (!R_ROWS[tag] || cells.length < 3 || !cells[1] || /^[-: ]+$/.test(cells[1])) return;
+      var low = cells[2].toLowerCase(), kind = "";
+      R_ROWS[tag].some(function (pt) { if (pt[0].test(low)) { kind = pt[1]; return true; } return false; });
+      out.push({ tag: tag, s: cells[1].replace(/[`*]/g, "").replace(/\s+/g, " ").slice(0, 220), st: cells[2].replace(/[`*]/g, "").slice(0, 90), kind: kind,
+                 uv: !kind && /unverified|could not check|blocked/.test(low) });
+    });
+    return out;
+  }
+  function rPost(now) {
+    if (solo || fill) return;
+    var send = function () {
+      rTimer = 0; rLast = Date.now();
+      try { parent.postMessage({ type: "code:review", state: R ? JSON.parse(JSON.stringify(R)) : null }, "*"); } catch (e) { /* gone */ }
+    };
+    if (now) { clearTimeout(rTimer); send(); return; }
+    if (!rTimer) rTimer = setTimeout(send, Math.max(0, 250 - (Date.now() - rLast)));
+  }
+  function rUpdate(final) {
+    if (!R) return;
+    var cmds = [], text = [], started = false;
+    S.tools.forEach(function (tl) {
+      var c = tl.name === "shell" ? inputOf(tl, "command") : tl.name === "read" ? (inputOf(tl, "filePath") || inputOf(tl, "path"))
+        : (tl.name === "grep" || tl.name === "glob") ? inputOf(tl, "pattern") : null;
+      cmds.push({ k: tl.name === "shell" ? "sh" : tl.name || "tool",
+                  s: c ? String(c.v).replace(/^cd \S+ && /, "").split("\n")[0].slice(0, 160) : tl.name || "tool", st: tl.status });
+      started = true;
+    });
+    S.steps.forEach(function (st) {
+      st.parts.forEach(function (pp) {
+        if (pp.text && pp.text.trim()) started = true;
+        if (pp.kind === "text") text.push(pp.text);
+      });
+    });
+    text = text.join("\n");
+    var vs = text.match(/REVIEW:[\s*_`]*(PASS|FAIL|INCOMPLETE)/gi);
+    R.verdict = vs ? /PASS|FAIL|INCOMPLETE/i.exec(vs[vs.length - 1])[0].toUpperCase() : null;
+    R.rows = rRows(text);
+    R.cmds = cmds.slice(-40);
+    R.nCmds = cmds.length;
+    R.model = S.model || R.model;
+    R.ph = R.verdict || final ? "verdict" : R.rows.length ? "sheet" : started ? "check" : "brief";
+    if (R.ph !== "brief" && !R.checkFrom) R.checkFrom = Date.now();
+    if (R.ph === "sheet" && !R.sheetFrom) R.sheetFrom = Date.now();
+    if (final) { R.ended = true; R.until = Date.now(); R.how = S.how || null; }
+    rPost(!!final || R.ph === "verdict");
+  }
+
+  // ---------- events
+  function touch(x) {
+    S.last = Date.now(); S.active = x;
+    if (x) { S.blocked = null; S.reread = false; }   // the model is at work again
+  }
+  function apply(ev) {
+    var t, p, s;
+    // the first thing the step after a compaction says: the new context has been read
+    if (C && C.ph === "readin" && /^(think0|text0|think\+|text\+|tool\+?)$/.test(ev.k)) cFinish("done");
+    switch (ev.k) {
+      case "compact":
+        cEvent(ev);
+        break;
+      case "cprog":
+        cProg(ev);
+        if (R && !C) { R.prog = { state: ev.state || null, read: ev.read, total: ev.total, pps: ev.pps, rate: ev.rate }; rPost(); }
+        break;
+      case "snap":
+        reset();
+        skew = ev.now ? ev.now - Date.now() : 0;
+        S.since = ev.since || null;
+        S.review = ev.review || null;  // this window is watching the reviewer's session of this chat, not the model's
+        confirmed = true;
+        setMode(ev.running ? "live" : "done", true);
+        (ev.steps || []).forEach(function (st) {
+          s = step(st.id); s.t0 = st.t0; s.t1 = st.t1; s.tokens = st.t1 ? st.tokens : null;
+          if (st.model) S.model = st.model;
+          st.parts.forEach(function (pp) {
+            if (pp.p === "tool") {
+              t = tool(pp.id, st.id); t.name = pp.name; t.status = pp.status === "pending" ? "running" : pp.status;
+              if (typeof pp.input === "string") t.raw = pp.input; else t.input = pp.input;
+              t.out = pp.out || ""; t.err = pp.err || ""; t.t0 = pp.t0; t.t1 = pp.t1; t.seen = Date.now();
+              t.diff = pp.diff || null;  // the patch from the turn as it was recorded, when the file was readable
+              t.views = pp.views || null;  // and the file views its reads produced, drawn from the recorded text
+              t.gitdiff = pp.gitdiff || null;  // and the per-file diffs of a git diff/show call
+              t.gitnote = pp.gitnote || "";
+              mark(t); S.active = t;
+            } else {
+              p = part(st.id, pp.p, pp.o); p.text = pp.text; p.done = pp.done; p.t0 = pp.t0; p.t1 = pp.t1; mark(p); S.active = p;
+            }
+          });
+          mark(s);
+        });
+        var last = ev.steps && ev.steps[ev.steps.length - 1];
+        S.until = last && last.t1 ? last.t1 : null;
+        var cc = ev.running ? ev.compacting : null;   // a compaction under way when this window opened
+        if (cc) {
+          cStart(cc.t0);
+          if (cc.ph === "end") { C.ph = "readin"; C.ended = Date.now(); C.text = cc.text || ""; C.tokens = cc.tokens || null; C.recent = cc.recent || 0; S.reread = true; }
+          else S.blocked = { what: "Compacting the conversation", ask: false, since: Date.now() };
+          cPost(true);
+        } else if (C) {
+          cFinish("done");
+        }
+        if (ev.review && ev.running) {   // a review round under way: the Code page's review overlay
+          var br = rBrief(ev.brief);
+          R = { round: (ev.review || {}).round || 0, since: R ? R.since : ev.since ? ev.since - skew : Date.now(),
+                brief: br.rows, recheck: br.recheck, model: S.model || "", prog: R ? R.prog : null, ph: "brief" };
+        } else {
+          R = null;
+        }
+        if (ev.handback && ev.running && !rHanded && !solo && !fill) {   // this run is the builder taking a review's findings
+          rHanded = true;
+          try { parent.postMessage({ type: "code:review-handback", findings: ev.handback.findings || [] }, "*"); } catch (e) { /* gone */ }
+        }
+        if (!ev.running && (!ev.steps || !ev.steps.length)) logEl.appendChild(el("div", "empty", "Nothing was recorded for this turn."));
+        break;
+      case "past":
+        setMode("past");
+        if (es) es.close();
+        break;
+      case "step":
+        s = step(ev.id); s.t0 = ev.t0; if (ev.model) S.model = ev.model; mark(s); touch(null);
+        break;
+      case "stepend":
+        s = step(ev.id); s.tokens = ev.tokens; s.t1 = ev.t1; S.until = ev.t1; mark(s); touch(null);
+        break;
+      case "think0": case "text0":
+        p = part(ev.id, ev.k.slice(0, 4), ev.o); p.t0 = ev.t0; mark(p); touch(p);
+        break;
+      case "think+": case "text+":
+        p = part(ev.id, ev.k.slice(0, 4), ev.o); p.text += ev.d; mark(p); touch(p);
+        break;
+      case "think.": case "text.":
+        p = part(ev.id, ev.k.slice(0, 4), ev.o); p.text = ev.text; p.done = true; p.t1 = ev.t1; mark(p); touch(null);
+        break;
+      case "tool":
+        t = tool(ev.id, ev.msg);
+        if (ev.name) t.name = ev.name;
+        if (ev.status) { t.status = ev.status; if (ev.status === "running") t.seen = Date.now(); }
+        if (ev.raw != null) t.raw = ev.raw;
+        if (ev.input !== undefined) t.input = ev.input;
+        if (ev.out != null) t.out = ev.out;
+        if (ev.err != null) t.err = ev.err;
+        if (ev.t0) t.t0 = ev.t0;
+        if (ev.t1) t.t1 = ev.t1;
+        if (!t.seen) t.seen = Date.now();
+        mark(t); touch(t);
+        break;
+      case "tool+":
+        t = tool(ev.id, ev.msg); t.raw += ev.d; mark(t); touch(t);
+        break;
+      case "diff":  // the patch the server worked out for this edit/write, recomputed as the agent types
+        t = S.tools.get(ev.id);
+        if (!t) break;  // a diff always follows the tool call it belongs to
+        t.diff = { path: ev.path || "", hunks: ev.hunks || [], more_old: ev.more_old || 0, note: ev.note || "" };
+        mark(t); touch(t);
+        break;
+      case "view":  // the lines this call read out of a file: the file view follows the call it belongs to
+        t = S.tools.get(ev.id);
+        if (!t) break;  // a view always follows the tool call that read the file
+        if (!t.views) t.views = [];
+        t.views.push({ path: ev.path || "", total: ev.total | 0, from: ev.from | 0, lines: ev.lines || [],
+                       ranges: ev.ranges || [], how: ev.how || "", note: ev.note || "", now: !!ev.now });
+        mark(t); touch(t);
+        break;
+      case "gitdiff":  // the per-file diffs the server parsed out of this shell call's git diff/show output
+        t = S.tools.get(ev.id);
+        if (!t) break;  // a gitdiff always follows the shell call it belongs to
+        t.gitdiff = ev.files || [];
+        t.gitnote = ev.note || "";
+        mark(t); touch(t);
+        break;
+      case "note":
+        var n = el("div", "note " + (ev.level || ""), esc(ev.text));
+        (S.order ? step(Array.from(S.steps.keys()).pop()).el : logEl).appendChild(n);
+        if (mode === "live") stageNote(ev.level, ev.text);
+        touch(null);
+        var nt = String(ev.text || "");
+        if (ev.level === "ask") {
+          S.blocked = { what: /approval/i.test(nt) ? "Waiting for your approval in the chat" : "Waiting for your answer in the chat",
+                        ask: true, since: Date.now() };
+        } else if (/^Compacting/.test(nt)) {
+          S.blocked = { what: "Compacting the conversation", ask: false, since: Date.now() };
+        } else if (/^(Compacted|Approved|Refused)\b/.test(nt)) {
+          S.blocked = null;
+          if (/^Compacted/.test(nt)) S.reread = true;
+        }
+        break;
+      case "end":
+        if (C) cFinish(C.ph === "readin" ? "done" : "fail", "the turn ended");
+        S.how = ev.how;
+        if (R) { rUpdate(true); R = null; }
+        if (!S.until) S.until = Date.now() + skew;
+        S.tools.forEach(function (x) { if (x.status === "running" || x.status === "streaming") { x.status = "error"; mark(x); } });
+        S.steps.forEach(function (x) { x.parts.forEach(function (y) { if (!y.done) { y.done = true; mark(y); } }); });
+        if (es) es.close();
+        setMode("done", false);
+        break;
+    }
+    if (R && /^(snap|step|stepend|think0|think\+|think\.|text0|text\+|text\.|tool|tool\+|view|diff|gitdiff)$/.test(ev.k)) rUpdate(false);
+  }
+
+  function setMode(m, fromSnap) {
+    var was = mode;
+    mode = m;
+    win.classList.remove("live", "done", "past", "ok", "bad", "stopped");
+    win.classList.add(m);
+    if (m === "done") win.classList.add(S && S.how === "failed" ? "bad" : S && S.how === "interrupted" ? "stopped" : "ok");
+    $("tog").title = m === "live" ? "Taller" : "Show what it did";
+    // A turn that just ended folds away unless the reader is in it; a replay the reader asked for stays open.
+    if (m === "done" && was === "live" && !fromSnap && !hovering && !solo && !fill) win.classList.remove("open");
+    if (m === "done" && (full || solo || fill)) win.classList.add("open");
+    header();
+    report();
+  }
+
+  // ---------- connection
+  function connect() {
+    if (es) es.close();
+    es = new EventSource("events" + location.search + (full ? "&full=1" : ""));
+    es.onmessage = function (m) {
+      fails = 0;
+      var ev;
+      try { ev = JSON.parse(m.data); } catch (e) { return; }
+      apply(ev);
+    };
+    es.onerror = function () {
+      if (mode !== "live") { es.close(); return; }
+      if (++fails > 40) { es.close(); $("now").textContent = "Live view unavailable"; return; }
+      if (es.readyState === 2) setTimeout(connect, 3000);
+      $("now").textContent = "Reconnecting…";
+    };
+  }
+
+  // ---------- size: the Open WebUI iframe follows our height
+  // live: whether this window shows a turn that is running now. The Code page script uses it to bring the running
+  // window into view when the chat's "scroll down" arrow is pressed; Open WebUI reads only the height.
+  var lastH = 0, lastLive = null;
+  function report() {
+    if (solo || fill) return;
+    var h = Math.ceil(win.getBoundingClientRect().height), live = confirmed && mode === "live";
+    if (h !== lastH || live !== lastLive) {
+      lastH = h; lastLive = live;
+      parent.postMessage({ type: "iframe:height", height: h, live: live }, "*");
+    }
+  }
+  new ResizeObserver(report).observe(win);
+
+  // ---------- interaction
+  body.addEventListener("scroll", function () {
+    follow = body.scrollTop + body.clientHeight >= body.scrollHeight - 40;
+    $("jump").classList.toggle("on", !follow);
+  }, { passive: true });
+  $("jump").addEventListener("click", function () { follow = true; body.scrollTop = body.scrollHeight; this.classList.remove("on"); });
+  $("resume").addEventListener("click", function (e) { e.stopPropagation(); T.pinned = null; win.classList.remove("pinned"); show(); });
+  win.addEventListener("mouseenter", function () { hovering = true; });
+  win.addEventListener("mouseleave", function () { hovering = false; });
+  $("seg").addEventListener("click", function (e) {
+    var b = e.target.closest("button");
+    if (!b) return;
+    win.classList.toggle("follow", b.dataset.v === "follow");
+    win.classList.toggle("logv", b.dataset.v === "logv");
+    $("seg").querySelectorAll("button").forEach(function (x) { x.classList.toggle("on", x === b); });
+    if (b.dataset.v === "logv") { follow = true; body.scrollTop = body.scrollHeight; }
+    report();
+  });
+  $("hd").addEventListener("click", function (e) {
+    if (e.target.closest("#pop") || e.target.closest("#seg") || e.target.closest("#watch")) return;
+    if (mode === "live") { if (e.target.closest("#tog")) { win.classList.toggle("big"); report(); } return; }
+    if (mode === "past" && !full) { full = true; win.classList.add("open"); connect(); return; }
+    win.classList.toggle("open");
+    report();
+  });
+  $("pop").addEventListener("click", function () { window.open(location.href, "_blank", "noopener"); });
+  $("watch").addEventListener("click", function (e) {   // the Code page opens its Watch mode on this turn
+    e.stopPropagation();
+    try { parent.postMessage({ type: "code:watch" }, "*"); } catch (err) { /* not in a chat */ }
+  });
+  if (fill) {
+    setInterval(function () {   // what the Watch page's header shows: this window's own state, once a second
+      if (!S) return;
+      try {
+        var tc = {};   // this turn's tool calls by name: Watch mode's Tools tab
+        S.tools.forEach(function (tl) { var k = tl.name || "tool"; tc[k] = (tc[k] || 0) + 1; });
+        parent.postMessage({ type: "code:watch-state", live: mode === "live", mode: mode, model: S.model || "",
+                             review: S.review || null, since: S.since ? S.since - skew : null, until: S.until ? S.until - skew : null,
+                             steps: S.order || 0, now: $("now").textContent, meta: $("meta").textContent, tools: tc }, "*");
+      } catch (err) { /* gone */ }
+    }, 1000);
+  }
+
+  reset();
+  connect();
+  report();
+})();
+</script>
+</body>
+</html>

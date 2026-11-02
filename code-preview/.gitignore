@@ -1,0 +1,5 @@
+# Local test environment — recreated by the installer (see BRIEF.md).
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

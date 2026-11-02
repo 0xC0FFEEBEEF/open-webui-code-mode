@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fixer — bug log</title>
+<style>
+  :root {
+    --page: #0b0b0c; --card: #131316; --border: #202024;
+    --text: #e5e5e5; --muted: #9ca3af; --accent: #4f8cff;
+    --green: #3ecf8e; --amber: #f5a524; --red: #f26d6d; --grey: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--page); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 24px 16px 60px; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 18px;
+    border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+  .brand { font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    font-size: 13px; color: var(--amber); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .count { color: var(--muted); font-size: 12px; margin-left: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:hover td { background: #191919; }
+  .title { font-weight: 600; color: var(--text); max-width: 380px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .title a { color: var(--text); text-decoration: none; } .title a:hover { color: var(--accent); }
+  .muted { color: var(--muted); font-size: 12px; }
+  .time { color: var(--muted); white-space: nowrap; font-size: 12px; }
+  .dur { color: var(--muted); white-space: nowrap; font-size: 12px; }
+  .pill { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: 11px;
+    font-weight: 700; border: 1px solid transparent; white-space: nowrap; }
+  .v-fixed { color: var(--green); border-color: var(--green); }
+  .v-notbug { color: var(--grey); border-color: var(--grey); }
+  .v-needs { color: var(--amber); border-color: var(--amber); }
+  .v-couldnt { color: var(--red); border-color: var(--red); }
+  .v-queued { color: var(--accent); border-color: var(--accent); }
+  .v-other { color: var(--muted); border-color: var(--muted); }
+  .empty { color: var(--muted); text-align: center; padding: 50px 0; }
+  .refresh { color: var(--accent); cursor: pointer; font-size: 12px; text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="brand">Fixer</span>
+    <h1>Bug log</h1>
+    <span class="count" id="count"></span>
+    <span class="refresh" id="refresh" style="margin-left:auto;">Refresh</span>
+  </header>
+  <table>
+    <thead><tr><th>When</th><th>Incident</th><th>Reporter</th>
+      <th>Verdict</th><th>Duration</th></tr></thead>
+    <tbody id="body"><tr><td colspan="5" class="empty">Loading incidents…</td></tr></tbody>
+  </table>
+</div>
+<script>
+(function () {
+  "use strict";
+  var VERDICT = {
+    fixed: ["v-fixed", "Fixed"],
+    not_a_bug: ["v-notbug", "Not a bug"],
+    needs_human: ["v-needs", "Needs you"],
+    could_not_fix: ["v-couldnt", "Couldn't fix"],
+    queued: ["v-queued", "Queued"],
+    investigating: ["v-queued", "Investigating"]
+  };
+  var body = document.getElementById("body");
+
+  function fmtTime(epoch) {
+    if (!epoch) return "—";
+    var d = new Date(epoch * 1000);
+    return d.toLocaleString(undefined, { month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+  function fmtDur(sec) {
+    if (sec == null) return "—";
+    if (sec < 60) return sec + "s";
+    var m = Math.floor(sec / 60), s = sec % 60;
+    if (m < 60) return m + "m " + s + "s";
+    var h = Math.floor(m / 60);
+    return h + "h " + (m % 60) + "m";
+  }
+  function verdictCell(v) {
+    var m = VERDICT[v] || ["v-other", v || "—"];
+    return '<span class="pill ' + m[0] + '">' + m[1] + "</span>";
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function render(rows) {
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">No incidents yet.</td></tr>';
+      document.getElementById("count").textContent = "0 incidents";
+      return;
+    }
+    document.getElementById("count").textContent = rows.length + " incident" +
+      (rows.length === 1 ? "" : "s");
+    var html = rows.map(function (r) {
+      var view = r.view || ("/f/" + r.id + "/");
+      var v = r.verdict || r.status || "queued";
+      return "<tr>" +
+        '<td class="time">' + fmtTime(r.created) + "</td>" +
+        '<td class="title"><a href="' + escapeHtml(view) + '">' +
+        escapeHtml(r.title || r.id || "incident") + "</a>" +
+        '<div class="muted">#' + escapeHtml(String(r.id)) +
+        (r.chat_id ? " · chat " + escapeHtml(String(r.chat_id)) : "") + "</div></td>" +
+        '<td class="muted">' + escapeHtml(r.reporter || r.reporter_model || "—") +
+        "</td>" +
+        "<td>" + verdictCell(v) + "</td>" +
+        '<td class="dur">' + fmtDur(r.duration) + "</td>" +
+        "</tr>";
+    }).join("");
+    body.innerHTML = html;
+  }
+
+  function load() {
+    fetch("incidents").then(function (r) { return r.json(); })
+      .then(function (rows) { render(Array.isArray(rows) ? rows.sort(
+        function (a, b) { return (b.created || 0) - (a.created || 0); }) : []); })
+      .catch(function () { body.innerHTML =
+        '<tr><td colspan="5" class="empty">Could not load incidents.</td></tr>'; });
+  }
+
+  document.getElementById("refresh").addEventListener("click", load);
+  load();
+})();
+</script>
+</body>
+</html>

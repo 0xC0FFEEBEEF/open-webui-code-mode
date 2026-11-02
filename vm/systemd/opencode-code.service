@@ -1,0 +1,25 @@
+[Unit]
+Description=Code mode - opencode server for Open WebUI
+After=network-online.target code-mode-firewall.service
+Wants=network-online.target
+Requires=code-mode-firewall.service
+
+[Service]
+User=coder
+Group=coder
+WorkingDirectory=/home/coder/projects
+Environment=HOME=/home/coder
+Environment=PATH=/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/opencode serve --service
+Restart=on-failure
+RestartSec=5
+# The VM also runs the shared desktop; keep builds from starving it.
+MemoryHigh=1536M
+MemoryMax=2G
+TasksMax=1024
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

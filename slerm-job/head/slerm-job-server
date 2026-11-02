@@ -1,0 +1,314 @@
+#!/usr/bin/python3
+"""slerm-job-server - the only thing the codebuild ssh key can run on slerm-head (sshd ForceCommand).
+
+The Code mode CLI `slerm-job` on VM 129 sends one request per ssh session in SSH_ORIGINAL_COMMAND:
+    submit                    stdin: one JSON line {chat, cmd, cwd, cpus, mem_mb, minutes, get[]} then the project
+                              as tar.gz; prints {"id": N}
+    status ID [ID...]         {"jobs": [{id, state, reason, node, elapsed, exit, result, log_size, waiting_on}]}
+    follow ID OFFSET MAXSEC   the job's log from byte OFFSET as it grows, until the job ends or MAXSEC (<= 300) pass
+    log ID OFFSET [LIMIT]     log bytes from OFFSET (LIMIT <= 4 MB)
+    fetch ID                  out.tar.gz (the --get outputs)
+    cancel ID                 scancel
+    list [CHAT]               recent jobs
+    nodes                     compute nodes: size, Slurm state, power state from slerm-orch
+Jobs run as codebuild in partition compute (Slurm account codebuild: 3 running, 8 queued, 4 h max). slerm-orch powers
+the nodes on for a pending job. Job folders: /home/codebuild/jobs/<token>/, by Slurm id via jobs/id/<N>.
+Source: ~/slerm-codebuild/head/ on Ghost. Python 3.9 (Rocky 9).
+"""
+import json, os, re, secrets, shlex, shutil, subprocess, sys, time
+
+JOBS = "/home/codebuild/jobs"
+JOB_SH = "/apps/codebuild/job.sh"
+ORCH_STATE = "/data/llm/run/orchestrator.json"
+MAX_INPUT = 300 * 1024 ** 2
+KEEP_DAYS = 3
+CHAT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+ACTIVE = {"PENDING", "CONFIGURING", "RUNNING", "COMPLETING", "SUSPENDED", "REQUEUED", "RESIZING", "SIGNALING",
+          "STAGE_OUT", "REQUEUE_HOLD", "REQUEUE_FED", "RESV_DEL_HOLD", "STOPPED"}
+
+
+class Refused(Exception):
+    pass
+
+
+def out(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def run(args, timeout=30):
+    p = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
+    return p.returncode, p.stdout, p.stderr
+
+
+def relpath_ok(p, allow_empty=False):
+    if not isinstance(p, str) or "\0" in p or len(p) > 300 or "\n" in p:
+        return False
+    if p in ("", "."):
+        return allow_empty
+    return not p.startswith("/") and ".." not in p.split("/")
+
+
+def jobdir(jid):
+    if not re.fullmatch(r"\d{1,9}", jid or ""):
+        raise Refused("bad job id")
+    link = os.path.join(JOBS, "id", jid)
+    if not os.path.islink(link):
+        raise Refused("job %s is not a slerm-job job (or it was cleaned up after %d days)" % (jid, KEEP_DAYS))
+    return os.path.join(JOBS, "id", os.readlink(link))
+
+
+def orch_devices():
+    try:
+        with open(ORCH_STATE) as f:
+            s = json.load(f)
+        return s.get("devices") or {}, (s.get("ups") or {}).get("on_battery", False)
+    except (OSError, ValueError):
+        return {}, False
+
+
+def compute_nodes():
+    rc, txt, _ = run(["sinfo", "-N", "-h", "-p", "compute", "-o", "%N|%c|%m|%T|%E"])
+    devs, battery = orch_devices()
+    nodes = []
+    for line in txt.splitlines():
+        n, c, m, st, reason = line.split("|", 4)
+        d = devs.get(n) or {}
+        managed = n in devs
+        usable = not st.startswith("down") and not ("drain" in st and not reason.startswith("slerm-orch"))
+        if managed and (d.get("startable") or d.get("drained_by_us") or d.get("booting")):
+            usable = True
+        power = ("on" if d.get("up") else "booting" if d.get("booting") else
+                 "off" if d.get("startable") or d.get("drained_by_us") else (d.get("reason") or "unknown")) \
+            if managed else ("on" if not st.endswith("*") else "not managed by slerm-orch, " + (reason or st))
+        nodes.append({"node": n, "cpus": int(c), "mem_mb": int(m), "slurm": st, "power": power, "usable": usable})
+    return nodes, battery
+
+
+def job_state(jid, jd):
+    info = {"id": int(jid)}
+    rc, txt, _ = run(["squeue", "-h", "-j", jid, "-o", "%T|%r|%N|%M"])
+    if rc == 0 and txt.strip():
+        st, reason, node, elapsed = txt.strip().split("|", 3)
+        info.update(state=st, reason=reason if reason != "None" else "", node=node, elapsed=elapsed)
+    else:
+        rc, txt, _ = run(["sacct", "-n", "-P", "-X", "-j", jid, "-o", "State,ExitCode,Elapsed,NodeList"])
+        line = (txt.strip().splitlines() or [""])[0]
+        if line:
+            st, code, elapsed, node = line.split("|", 3)
+            info.update(state=st.split()[0], reason=st if " " in st else "", node=node, elapsed=elapsed,
+                        slurm_exit=code)
+        else:
+            info.update(state="UNKNOWN")
+    try:
+        with open(os.path.join(jd, "out", "result.json")) as f:
+            info["result"] = json.load(f)
+    except (OSError, ValueError):
+        pass
+    try:
+        info["log_size"] = os.path.getsize(os.path.join(jd, "log.txt"))
+    except OSError:
+        info["log_size"] = 0
+    info["done"] = info["state"] not in ACTIVE
+    if info["state"] == "PENDING":
+        nodes, battery = compute_nodes()
+        if battery:
+            info["waiting_on"] = "the UPS is on battery: slerm-orch will not power nodes on until power is back"
+        else:
+            boot = [n["node"] for n in nodes if n["power"] == "booting"]
+            off = [n["node"] for n in nodes if n["power"] == "off"]
+            on = [n["node"] for n in nodes if n["power"] == "on"]
+            if boot:
+                info["waiting_on"] = "%s booting (a node takes about 1-3 minutes)" % ", ".join(boot)
+            elif off and not on:
+                info["waiting_on"] = "all build nodes are off; slerm-orch powers one on within about 15 s"
+            elif on and "Resources" in info.get("reason", ""):
+                info["waiting_on"] = "the running nodes (%s) are busy%s" % (
+                    ", ".join(on), "; slerm-orch powers on %s" % ", ".join(off) if off else "")
+            elif on:
+                info["waiting_on"] = "starting on a running node"
+    try:
+        with open(os.path.join(jd, "spec.json")) as f:
+            spec = json.load(f)
+        info.update(chat=spec.get("chat"), cmd=spec.get("cmd"), submitted=spec.get("submitted"))
+    except (OSError, ValueError):
+        pass
+    return info
+
+
+def prune():
+    cut = time.time() - KEEP_DAYS * 86400
+    idd = os.path.join(JOBS, "id")
+    for name in os.listdir(JOBS):
+        p = os.path.join(JOBS, name)
+        if name == "id" or not os.path.isdir(p):
+            continue
+        try:
+            if os.path.getmtime(os.path.join(p, "spec.json")) < cut:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            if os.path.getmtime(p) < cut:
+                shutil.rmtree(p, ignore_errors=True)
+    for jid in os.listdir(idd):
+        if not os.path.exists(os.path.join(idd, jid)):
+            os.unlink(os.path.join(idd, jid))
+
+
+def submit():
+    head = sys.stdin.buffer.readline(65537)
+    if not head.endswith(b"\n"):
+        raise Refused("the request header is missing or too long")
+    try:
+        spec = json.loads(head)
+    except ValueError:
+        raise Refused("the request header is not JSON")
+    chat, cmd = spec.get("chat"), spec.get("cmd")
+    if not isinstance(chat, str) or not CHAT_RE.match(chat):
+        raise Refused("bad chat id")
+    if not isinstance(cmd, str) or not cmd.strip() or len(cmd) > 8000 or "\0" in cmd:
+        raise Refused("the command must be 1-8000 characters")
+    cwd = spec.get("cwd") or ""
+    if not relpath_ok(cwd, allow_empty=True):
+        raise Refused("bad command folder")
+    get = spec.get("get") or []
+    if not isinstance(get, list) or len(get) > 32 or not all(relpath_ok(g) for g in get):
+        raise Refused("--get takes up to 32 paths inside the project (no '..', no leading '/')")
+    try:
+        cpus, mem, minutes = int(spec.get("cpus", 8)), int(spec.get("mem_mb", 8192)), int(spec.get("minutes", 30))
+    except (TypeError, ValueError):
+        raise Refused("cpus, mem_mb and minutes must be numbers")
+    if not (1 <= cpus <= 64 and 256 <= mem <= 256000 and 1 <= minutes <= 240):
+        raise Refused("limits: 1-64 CPUs, 256 MB-256 GB, 1-240 minutes")
+    nodes, _ = compute_nodes()
+    fits = [n for n in nodes if n["usable"] and n["cpus"] >= cpus and n["mem_mb"] >= mem]
+    if not fits:
+        sizes = ", ".join("%s %d CPUs/%d MB" % (n["node"], n["cpus"], n["mem_mb"]) for n in nodes if n["usable"])
+        raise Refused("no build node has %d CPUs and %d MB at once. Nodes: %s" % (cpus, mem, sizes or "none usable"))
+    os.makedirs(os.path.join(JOBS, "id"), exist_ok=True)
+    prune()
+    token = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
+    jd = os.path.join(JOBS, token)
+    os.makedirs(os.path.join(jd, "out"), mode=0o700)
+    size = 0
+    with open(os.path.join(jd, "input.tar.gz"), "wb") as f:
+        while True:
+            chunk = sys.stdin.buffer.read(1 << 20)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_INPUT:
+                shutil.rmtree(jd, ignore_errors=True)
+                raise Refused("the project upload is over %d MB" % (MAX_INPUT >> 20))
+            f.write(chunk)
+    if size == 0:
+        shutil.rmtree(jd, ignore_errors=True)
+        raise Refused("no project archive arrived")
+    rec = {"chat": chat, "cmd": cmd, "cwd": cwd, "get": get, "cpus": cpus, "mem_mb": mem, "minutes": minutes,
+           "submitted": int(time.time()), "input_bytes": size}
+    with open(os.path.join(jd, "spec.json"), "w") as f:
+        json.dump(rec, f)
+    rc, txt, err = run(["sbatch", "--parsable", "-p", "compute", "-A", "codebuild", "-J", "cb-" + chat[:12],
+                        "-c", str(cpus), "--mem=%dM" % mem, "-t", str(minutes), "-D", jd,
+                        "-o", os.path.join(jd, "log.txt"), "--export=NONE", "--no-requeue",
+                        JOB_SH, jd, chat])
+    if rc != 0:
+        shutil.rmtree(jd, ignore_errors=True)
+        raise Refused("sbatch refused the job: " + (err.strip() or txt.strip())[:500])
+    jid = txt.strip().split(";")[0]
+    os.symlink("../" + token, os.path.join(JOBS, "id", jid))
+    out({"id": int(jid), "input_bytes": size, "fits": [n["node"] for n in fits]})
+
+
+def follow(jid, offset, maxsec):
+    jd = jobdir(jid)
+    log = os.path.join(jd, "log.txt")
+    off, end = int(offset), time.time() + min(int(maxsec), 300)
+    checked, done = 0.0, False
+    w = sys.stdout.buffer
+    while True:
+        try:
+            size = os.path.getsize(log)
+        except OSError:
+            size = 0
+        if size > off:
+            with open(log, "rb") as f:
+                f.seek(off)
+                data = f.read(min(size - off, 1 << 20))
+            w.write(data)
+            w.flush()
+            off += len(data)
+            continue
+        if done or time.time() > end:
+            return
+        if time.time() - checked > 3:
+            checked = time.time()
+            rc, txt, _ = run(["squeue", "-h", "-j", jid, "-o", "%T"])
+            if not txt.strip() or txt.strip() not in ACTIVE:
+                time.sleep(1.5)       # last lines written just before the job ended
+                done = True
+                continue
+        time.sleep(0.5)
+
+
+def main():
+    try:
+        args = shlex.split(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
+    except ValueError:
+        args = []
+    if not args:
+        out({"error": "usage: submit | status ID.. | follow ID OFFSET MAXSEC | log ID OFFSET [LIMIT] | fetch ID | "
+                      "cancel ID | list [CHAT] | nodes"})
+        return 2
+    op, rest = args[0], args[1:]
+    try:
+        if op == "submit" and not rest:
+            submit()
+        elif op == "status" and 1 <= len(rest) <= 20:
+            out({"jobs": [job_state(j, jobdir(j)) for j in rest]})
+        elif op == "follow" and len(rest) == 3 and rest[1].isdigit() and rest[2].isdigit():
+            follow(*rest)
+        elif op == "log" and len(rest) in (2, 3) and all(x.isdigit() for x in rest[1:]):
+            limit = min(int(rest[2]) if len(rest) == 3 else 1 << 20, 4 << 20)
+            with open(os.path.join(jobdir(rest[0]), "log.txt"), "rb") as f:
+                f.seek(int(rest[1]))
+                sys.stdout.buffer.write(f.read(limit))
+        elif op == "fetch" and len(rest) == 1:
+            p = os.path.join(jobdir(rest[0]), "out", "out.tar.gz")
+            if not os.path.isfile(p):
+                raise Refused("job %s has no outputs" % rest[0])
+            with open(p, "rb") as f:
+                shutil.copyfileobj(f, sys.stdout.buffer, 1 << 20)
+        elif op == "cancel" and len(rest) == 1:
+            jobdir(rest[0])
+            rc, txt, err = run(["scancel", rest[0]])
+            out({"cancelled": rc == 0, "error": err.strip()} if rc else {"cancelled": True})
+        elif op == "list" and len(rest) <= 1:
+            if rest and not CHAT_RE.match(rest[0]):
+                raise Refused("bad chat id")
+            rows = []
+            idd = os.path.join(JOBS, "id")
+            for jid in sorted(os.listdir(idd) if os.path.isdir(idd) else [], key=int, reverse=True)[:40]:
+                try:
+                    with open(os.path.join(idd, jid, "spec.json")) as f:
+                        spec = json.load(f)
+                except (OSError, ValueError):
+                    continue
+                if rest and spec.get("chat") != rest[0]:
+                    continue
+                rows.append(job_state(jid, os.path.join(idd, jid)))
+            out({"jobs": rows})
+        elif op == "nodes" and not rest:
+            nodes, battery = compute_nodes()
+            out({"nodes": nodes, "ups_on_battery": battery})
+        else:
+            raise Refused("unknown request %r" % op)
+    except Refused as e:
+        out({"error": str(e)})
+        return 1
+    except BrokenPipeError:
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

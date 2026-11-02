@@ -1,0 +1,1223 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "slerm/ornith-1.5-35b-a3b",
+  "provider": {
+    "slerm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "slerm (llama.cpp router)",
+      "options": {
+        "baseURL": "http://slerm-head:8090/v1",
+        "timeout": false,
+        "headerTimeout": false
+      },
+      "models": {
+        "Qwen3-8B-Q4_K_M": {
+          "name": "Qwen3-8B-Q4_K_M (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "bonsai-27b": {
+          "name": "bonsai-27b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 16384,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "deepseek-chat": {
+          "name": "deepseek-chat (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "gemma-3-4b-it-q4km": {
+          "name": "gemma-3-4b-it-q4km (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "gemma4-26b-a4b": {
+          "name": "gemma4-26b-a4b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "gpt-oss-20b-mxfp4": {
+          "name": "gpt-oss-20b-mxfp4 (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "holo-3.1-9b": {
+          "name": "holo-3.1-9b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "holo4-35b-a3b": {
+          "name": "holo4-35b-a3b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "llama3.2-1b": {
+          "name": "llama3.2-1b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 65536,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "ornith-1.5-9b": {
+          "name": "ornith-1.5-9b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 65536,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "qwen2.5-coder-3b": {
+          "name": "qwen2.5-coder-3b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 65536,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen2.5-coder-7b": {
+          "name": "qwen2.5-coder-7b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3-14b": {
+          "name": "qwen3-14b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "qwen3-30b-a3b-2507-q3km": {
+          "name": "qwen3-30b-a3b-2507-q3km (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 65536,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3-30b-a3b-2507-q4km": {
+          "name": "qwen3-30b-a3b-2507-q4km (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 65536,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3-30b-a3b-iq2": {
+          "name": "qwen3-30b-a3b-iq2 (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "qwen3-8b": {
+          "name": "qwen3-8b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "qwen3-coder-30b-a3b-q3km": {
+          "name": "qwen3-coder-30b-a3b-q3km (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 65536,
+            "output": 4096
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3-coder-30b-a3b-q4km": {
+          "name": "qwen3-coder-30b-a3b-q4km (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 4096
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3-coder-next-ud-q2kxl": {
+          "name": "qwen3-coder-next-ud-q2kxl (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 2048
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3-coder-next-ud-q4kxl": {
+          "name": "qwen3-coder-next-ud-q4kxl (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "qwen3.5-9b": {
+          "name": "qwen3.5-9b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "ui-venus-2-9b": {
+          "name": "ui-venus-2-9b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "kat-coder-v2.5-dev": {
+          "name": "kat-coder-v2.5-dev (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "nemotron-3.5-lightning-30b-a3b": {
+          "name": "nemotron-3.5-lightning-30b-a3b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "ornith-1.5-35b-a3b": {
+          "name": "ornith-1.5-35b-a3b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "qwen3.6-35b-a3b-ud-q4kxl": {
+          "name": "qwen3.6-35b-a3b-ud-q4kxl (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "qwen3.6-35b-a3b-ud-q5kxl": {
+          "name": "qwen3.6-35b-a3b-ud-q5kxl (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "qwen3.8-27b": {
+          "name": "qwen3.8-27b (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "qwen3.8-27b-turbo": {
+          "name": "qwen3.8-27b-turbo (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "gpt-oss-120b-mxfp4": {
+          "name": "gpt-oss-120b-mxfp4 (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "qwen3.8-flash-next-coder": {
+          "name": "qwen3.8-flash-next-coder (slerm)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "STRATA-qwen3.8-flash-next-coder": {
+          "name": "STRATA-qwen3.8-flash-next-coder (slerm, Strata engine)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "STRATA-qwen3.8-flash-next-iq2xs": {
+          "name": "STRATA-qwen3.8-flash-next-iq2xs (slerm, Strata engine, full 177B)",
+          "tool_call": true,
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        },
+        "STRATA-qwen3.8-flash-next-iq3xxs": {
+          "name": "STRATA-qwen3.8-flash-next-iq3xxs (slerm, Strata engine, full 177B)",
+          "tool_call": true,
+          "limit": {
+            "context": 262144,
+            "output": 8192
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          },
+          "headers": {
+            "X-Slerm-Profile": "coding"
+          },
+          "variants": {
+            "none": {
+              "reasoningEffort": "none"
+            },
+            "minimal": {
+              "reasoningEffort": "minimal"
+            },
+            "low": {
+              "reasoningEffort": "low"
+            },
+            "medium": {
+              "reasoningEffort": "medium"
+            },
+            "high": {
+              "reasoningEffort": "high"
+            },
+            "xhigh": {
+              "reasoningEffort": "xhigh"
+            },
+            "max": {
+              "reasoningEffort": "max"
+            }
+          }
+        }
+      }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "context7": {
+        "type": "remote",
+        "url": "https://mcp.context7.com/mcp"
+      },
+      "deepwiki": {
+        "type": "remote",
+        "url": "https://mcp.deepwiki.com/mcp"
+      },
+      "grep": {
+        "type": "remote",
+        "url": "https://mcp.grep.app"
+      },
+      "exa": {
+        "type": "remote",
+        "url": "https://mcp.exa.ai/mcp"
+      }
+    }
+  },
+  "compaction": {
+    "reserved": 32768,
+    "preserve_recent_tokens": 8000
+  },
+  "permission": {
+    "bash": {
+      "*": "allow",
+      "rm -rf /*": "ask",
+      "rm -fr /*": "ask",
+      "rm -rf ~*": "ask",
+      "rm -fr ~*": "ask",
+      "rm -rf /home/coder/projects/chats/*": "allow",
+      "rm -fr /home/coder/projects/chats/*": "allow",
+      "rm -rf /tmp/*": "allow",
+      "rm -fr /tmp/*": "allow",
+      "git push*": "ask"
+    },
+    "edit": "allow",
+    "external_directory": "allow"
+  }
+}

@@ -1,0 +1,15 @@
+#!/bin/bash
+# Recent logs of the Code-mode services, with secrets masked - evidence for the fixer.
+# coder may run this through sudo (see /etc/sudoers.d/code-mode-fixer). Usage: code-mode-logs [MINUTES]
+set -euo pipefail
+MIN="${1:-30}"
+[[ "$MIN" =~ ^[0-9]+$ ]] || MIN=30
+(( MIN > 720 )) && MIN=720
+for unit in opencode-code code-preview code-fixer sandbox-agent code-mode-firewall; do
+    echo "===== $unit (last $MIN min) ====="
+    journalctl -u "$unit" --since "-${MIN}min" --no-pager -o short-iso 2>/dev/null | tail -n 400 || true
+done | sed -E \
+    -e 's/((token|TOKEN|Token|password|PASSWORD|Password|secret|SECRET|Secret)[=: ]+)[^ &"]+/\1***/g' \
+    -e 's/([?&](t|sig|token)=)[^ &"]+/\1***/g' \
+    -e 's/(Bearer )[A-Za-z0-9._~+\/=-]+/\1***/g' \
+    -e 's#(/(p|f)/[A-Za-z0-9_-]+/)[0-9a-f]{32}#\1***#g'

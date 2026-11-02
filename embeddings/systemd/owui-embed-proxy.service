@@ -1,0 +1,24 @@
+[Unit]
+Description=Front for the Open WebUI embedding model (cuts over-long inputs, caches repeats)
+Documentation=file:///opt/owui-embed/README.md
+Requires=owui-embed.service
+After=owui-embed.service
+
+[Service]
+DynamicUser=yes
+ExecStart=/usr/bin/python3 -I /opt/owui-embed/embed-proxy.py
+Environment=EMBED_UPSTREAM=http://127.0.0.1:8098
+Environment=EMBED_LISTEN=127.0.0.1:8099
+Environment=EMBED_MAX_TOKENS=2040
+Environment=EMBED_CACHE_ENTRIES=20000
+Restart=on-failure
+RestartSec=5
+MemoryMax=300M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target

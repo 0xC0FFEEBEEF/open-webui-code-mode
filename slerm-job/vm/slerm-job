@@ -1,0 +1,543 @@
+#!/usr/bin/env python3
+"""slerm-job - run a build or test command on the slerm cluster's CPU nodes from a Code mode project folder.
+
+    slerm-job run [--cpus 8] [--mem 8G] [--time 30m] [--get PATH]... [--later [NOTE] | --detach] -- COMMAND...
+    slerm-job wait [ID]            follow a job to the end, copy its --get outputs back, print the result
+    slerm-job status [ID] | log ID [--all] | cancel ID | list | nodes
+
+The project folder (this chat's folder; .gitignore'd files such as node_modules/ and target/ are left out) is copied to
+a node, COMMAND runs there in the same sub-folder you ran slerm-job from, inside an Ubuntu 24.04 image with the same
+toolchain as this VM (gcc 13, Python 3.12, Node 18 + npm, Rust). The node keeps the chat's copy between jobs, so a
+second build only recompiles what changed. Only the paths given with --get come back. Nodes: slerm-node01/02 (16 CPUs,
+11.6 GB), slerm-node05 (8 CPUs, 31 GB); a node that is off is powered on by slerm-head (1-3 minutes).
+`run` waits up to --wait-max seconds (default 540, so call it with a 600000 ms shell timeout); if the job is still
+going it says so and `slerm-job wait ID` picks it up again. `--later` returns at once and wakes this chat when the job
+ends (through `later`). Exit status = the job's exit status; 3 = still running; 2 = refused / could not submit.
+Source: ~/slerm-codebuild/vm/slerm-job on Ghost (2026-10-20).
+"""
+import argparse, collections, io, json, os, re, shlex, subprocess, sys, tarfile, tempfile, time
+
+HEAD = "codebuild@slerm-head"
+KEY = "/etc/code-mode/slerm-job.key"
+KNOWN = "/etc/code-mode/slerm-known_hosts"
+PROJECTS = "/home/coder/projects"
+STATE = os.path.expanduser("~/.local/state/code-mode/slerm-job")
+MAX_UPLOAD = 300 * 1024 ** 2
+SKIP_DIRS = {".git", "node_modules", "target", "__pycache__", ".venv", "venv", ".next", ".cache", ".mypy_cache",
+             ".pytest_cache", ".tox", ".gradle", "dist-newstyle", ".slerm-job"}
+LIVE_LINES, TAIL_LINES = 60, 60
+SSH = ["ssh", "-i", KEY, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "UserKnownHostsFile=" + KNOWN,
+       "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=15",
+       "-o", "LogLevel=ERROR", "-T", HEAD]
+
+
+def say(msg=""):
+    print(msg, flush=True)
+
+
+def die(msg, code=2):
+    say("slerm-job: " + msg)
+    sys.exit(code)
+
+
+def ssh_json(*args, stdin=None):
+    try:
+        p = subprocess.run(SSH + [shlex.join(args)], input=stdin, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        die("slerm-head did not answer within 2 minutes")
+    try:
+        r = json.loads(p.stdout.decode() or "{}")
+    except ValueError:
+        die("unexpected answer from slerm-head: %s %s" % (p.stdout[:300], p.stderr.decode()[:300]))
+    if "error" in r and r.get("error"):
+        die(r["error"])
+    return r
+
+
+# ---- project -------------------------------------------------------------------------------------------------
+
+def project():
+    """(root, chat id, sub-folder of root we are in)."""
+    cwd = os.path.realpath(os.getcwd())
+    m = re.match(r"^%s/chats/([^/]+)(?:/|$)" % re.escape(PROJECTS), cwd)
+    if m:
+        root, chat = "%s/chats/%s" % (PROJECTS, m.group(1)), m.group(1)
+    else:
+        m = re.match(r"^%s/features/([^/]+)/([^/]+)(?:/|$)" % re.escape(PROJECTS), cwd)
+        if m:
+            root, chat = "%s/features/%s/%s" % (PROJECTS, m.group(1), m.group(2)), m.group(1)
+        else:
+            g = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+            root = g.stdout.strip() if g.returncode == 0 else cwd
+            chat = "dir-" + re.sub(r"[^A-Za-z0-9._-]", "-", os.path.basename(root))[:60]
+    chat = re.sub(r"[^A-Za-z0-9._-]", "-", chat)[:80]
+    return root, chat, os.path.relpath(cwd, root)
+
+
+def git_files(repo):
+    g = subprocess.run(["git", "-C", repo, "ls-files", "-z", "-co", "--exclude-standard"], capture_output=True)
+    if g.returncode != 0:
+        return None
+    return [n for n in g.stdout.decode(errors="surrogateescape").split("\0") if n]
+
+
+def walk_files(base, prefix):
+    out = []
+    for d, dirs, files in os.walk(base):
+        dirs[:] = [x for x in dirs if x not in SKIP_DIRS]
+        for f in files:
+            out.append(os.path.normpath(os.path.join(prefix, os.path.relpath(os.path.join(d, f), base))))
+    return out
+
+
+def project_files(root, prefix="", depth=0):
+    """Files to copy, relative to root. Follows each git repo's own .gitignore. Git lists a repo cloned inside
+    another one (or a submodule) as a single folder entry, so those are listed from inside, one level at a time."""
+    base = os.path.join(root, prefix) if prefix else root
+    names = git_files(base) if os.path.lexists(os.path.join(base, ".git")) else None
+    if names is None:
+        return walk_files(base, prefix)
+    out = []
+    for n in names:
+        n = n.rstrip("/")
+        p, rel = os.path.join(base, n), os.path.normpath(os.path.join(prefix, n))
+        if n == ".git" or n.startswith(".git/") or n.split("/")[0] in SKIP_DIRS or not os.path.lexists(p):
+            continue
+        if os.path.isdir(p) and not os.path.islink(p):
+            if depth < 4 and os.path.lexists(os.path.join(p, ".git")):
+                out += project_files(root, rel, depth + 1)
+            else:
+                out += walk_files(p, rel)
+        else:
+            out.append(rel)
+    return out
+
+
+MANIFESTS = {"cargo": "Cargo.toml", "npm": "package.json", "npx": "package.json", "yarn": "package.json",
+             "pnpm": "package.json", "make": "Makefile", "cmake": "CMakeLists.txt", "go": "go.mod"}
+
+
+def check_paths(root, sub, command, names):
+    """Stop when the command names a file here that git ignores (.gitignore or .git/info/exclude, which covers
+    .code-mode/): it would not be copied, and the job would only fail on the node with "No such file"."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return
+    sent = set(names)
+    here = os.path.normpath(os.path.join(root, sub))
+    for w in words:
+        if not w or w.startswith("-") or "=" in w or len(w) > 300:
+            continue
+        p = os.path.normpath(os.path.join(here, w))
+        if not os.path.isfile(p) or not (p == root or p.startswith(root.rstrip("/") + "/")):
+            continue
+        rel = os.path.relpath(p, root)
+        if rel not in sent:
+            die("%s is not copied to the node: git ignores it (.gitignore or .git/info/exclude; .code-mode/ is "
+                "excluded).\n  Put scripts the job runs in a folder git doesn't ignore, e.g. scripts/." % w)
+
+
+def check_folder(root, sub, command, names):
+    """Stop early when the command plainly needs a project file that is not in this folder (or above it)."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return
+    want = MANIFESTS.get(words[0]) if words else None
+    if not want or (words[0] == "go" and len(words) > 1 and words[1] == "version"):
+        return
+    here = os.path.normpath(os.path.join(root, sub))
+    d = here
+    while True:
+        if os.path.exists(os.path.join(d, want)):
+            return
+        if os.path.normpath(d) == os.path.normpath(root):
+            break
+        d = os.path.dirname(d)
+    found = sorted({os.path.dirname(n) or "." for n in names if os.path.basename(n) == want}, key=len)[:5]
+    die("`%s` needs %s, and there is none in %s or above it inside the project.%s\n"
+        "  Run slerm-job from the folder the command belongs in, or start the command with `cd DIR &&`."
+        % (words[0], want, sub if sub != "." else "the project's top folder",
+           ("\n  %s is in: %s (relative to the project's top folder)" % (want, ", ".join(found))) if found else ""))
+
+
+def pack(root, names=None):
+    names = project_files(root) if names is None else names
+    tmp = tempfile.NamedTemporaryFile(prefix="slerm-job-", suffix=".tar.gz", delete=False)
+    with tarfile.open(fileobj=tmp, mode="w:gz", compresslevel=3) as tf:
+        for n in sorted(names):
+            tf.add(os.path.join(root, n), arcname=n, recursive=False)
+    tmp.close()
+    return tmp.name, len(names), os.path.getsize(tmp.name)
+
+
+# ---- local job records -------------------------------------------------------------------------------------
+
+def save_job(jid, rec):
+    os.makedirs(os.path.join(STATE, "jobs"), exist_ok=True)
+    with open(os.path.join(STATE, "jobs", "%d.json" % jid), "w") as f:
+        json.dump(rec, f)
+    os.makedirs(os.path.join(STATE, "last"), exist_ok=True)
+    with open(os.path.join(STATE, "last", rec["chat"]), "w") as f:
+        f.write(str(jid))
+
+
+def load_job(jid):
+    try:
+        with open(os.path.join(STATE, "jobs", "%d.json" % jid)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def pick_id(arg):
+    if arg:
+        if not str(arg).isdigit():
+            die("job ids are numbers, e.g. slerm-job wait 4612")
+        return int(arg)
+    _, chat, _ = project()
+    try:
+        with open(os.path.join(STATE, "last", chat)) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        die("no job id given and this folder has no earlier job")
+
+
+# ---- sizes -------------------------------------------------------------------------------------------------
+
+def mem_mb(s):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([gGmM]?)[bB]?", str(s).strip())
+    if not m:
+        raise argparse.ArgumentTypeError("memory like 8G or 4096M")
+    v = float(m.group(1))
+    return int(v * 1024 if m.group(2).lower() == "g" else v)
+
+
+def minutes(s):
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([smhSMH]?)", str(s).strip())
+    if not m:
+        raise argparse.ArgumentTypeError("time like 30m, 2h or 90s")
+    v, u = float(m.group(1)), m.group(2).lower()
+    return max(1, int(round(v / 60 if u == "s" else v * 60 if u == "h" else v)))
+
+
+def fmt_s(sec):
+    sec = int(sec)
+    return "%dh%02dm" % (sec // 3600, sec % 3600 // 60) if sec >= 3600 else "%dm%02ds" % (sec // 60, sec % 60) \
+        if sec >= 60 else "%ds" % sec
+
+
+# ---- following a job ---------------------------------------------------------------------------------------
+
+class Printer:
+    """Shows the first LIVE_LINES log lines as they come, then a progress note now and then, then the last
+    TAIL_LINES at the end. Lines from slerm-job itself ([slerm-job] ...) always show. The whole log is kept."""
+
+    def __init__(self, jid, path):
+        self.jid, self.path, self.n, self.hidden = jid, path, 0, 0
+        self.tail = collections.deque(maxlen=TAIL_LINES)
+        self.last_note = time.time()
+
+    def line(self, text):
+        self.n += 1
+        if self.n <= LIVE_LINES or text.startswith("[slerm-job]"):
+            if self.hidden and text.startswith("[slerm-job]"):
+                self.flush_tail()
+            say(text)
+        else:
+            self.hidden += 1
+            self.tail.append(text)
+            if time.time() - self.last_note > 30:
+                self.last_note = time.time()
+                say("[slerm-job] ... still running, %d log lines so far (full log: %s)" % (self.n, self.path))
+
+    def flush_tail(self):
+        if self.hidden > len(self.tail):
+            say("[slerm-job] ... %d lines not shown (full log: %s) ..." % (self.hidden - len(self.tail), self.path))
+        for t in self.tail:
+            say(t)
+        self.tail.clear()
+        self.hidden = 0
+
+
+def follow(jid, rec, wait_max):
+    """Returns the final status dict, or None if wait_max ran out first."""
+    deadline = time.time() + wait_max
+    logdir = os.path.join(STATE, "logs")
+    os.makedirs(logdir, exist_ok=True)
+    path = os.path.join(logdir, "%d.log" % jid)
+    offset = os.path.getsize(path) if os.path.exists(path) else 0
+    pr = Printer(jid, path)
+    if offset:
+        say("[slerm-job] picking up job %d's log at %d bytes (earlier part in %s)" % (jid, offset, path))
+    shown_wait = None
+    while True:
+        st = ssh_json("status", str(jid))["jobs"][0]
+        if st["state"] == "PENDING":
+            why = st.get("waiting_on") or st.get("reason") or "waiting in the queue"
+            if why != shown_wait:
+                say("[slerm-job] job %d is waiting: %s" % (jid, why))
+                shown_wait = why
+            if time.time() > deadline:
+                return None
+            time.sleep(5)
+            continue
+        if st.get("log_size", 0) > offset or not st["done"]:
+            left = max(5, int(deadline - time.time()))
+            p = subprocess.Popen(SSH + ["follow %d %d %d" % (jid, offset, min(60, left))], stdout=subprocess.PIPE)
+            buf = b""
+            with open(path, "ab") as logf:
+                for chunk in iter(lambda: p.stdout.read1(65536), b""):
+                    logf.write(chunk)
+                    logf.flush()
+                    offset += len(chunk)
+                    buf += chunk
+                    *lines, buf = buf.split(b"\n")
+                    for ln in lines:
+                        pr.line(ln.decode(errors="replace").rstrip("\r"))
+                if buf:
+                    pr.line(buf.decode(errors="replace"))
+            p.wait()
+        if st["done"]:
+            st = ssh_json("status", str(jid))["jobs"][0]
+            if st.get("log_size", 0) <= offset:
+                pr.flush_tail()
+                return st
+        elif time.time() > deadline:
+            pr.flush_tail()
+            return None
+
+
+def fetch(jid, rec):
+    dest = os.path.normpath(os.path.join(rec["root"], rec.get("cwd") or "."))
+    p = subprocess.run(SSH + ["fetch %d" % jid], capture_output=True, timeout=1800)
+    if p.returncode != 0 or not p.stdout:
+        try:
+            msg = json.loads(p.stdout or b"{}").get("error")
+        except ValueError:
+            msg = None
+        say("[slerm-job] could not copy the outputs back: %s" % (msg or p.stderr.decode()[:300] or "no data"))
+        return []
+    wrote, refused = [], []
+    with tarfile.open(fileobj=io.BytesIO(p.stdout), mode="r:gz") as tf:
+        for m in tf.getmembers():
+            try:
+                tf.extract(m, dest, filter="data")
+                if m.isfile():
+                    wrote.append(m.name)
+            except (tarfile.FilterError, OSError) as e:
+                refused.append("%s (%s)" % (m.name, e))
+    for r in refused[:10]:
+        say("[slerm-job] not copied: " + r)
+    return wrote
+
+
+def finish(jid, rec, st):
+    res = st.get("result") or {}
+    state = st["state"]
+    code = res.get("exit")
+    where = " on " + (res.get("node") or st.get("node") or "?")
+    took = " in " + fmt_s(res["seconds"]) if res.get("seconds") is not None else " after " + st.get("elapsed", "?")
+    why = ""
+    if state == "COMPLETED" and code == 0:
+        verdict, rc = "OK (exit 0)", 0
+    elif state == "TIMEOUT":
+        verdict, rc, why = "STOPPED", 124, "hit its --time limit of %d min" % rec.get("minutes", 0)
+    elif "OUT_OF_ME" in state:
+        verdict, rc, why = "FAILED", 137, "ran out of memory (--mem %d MB): ask for more, or build with fewer " \
+            "parallel jobs" % rec.get("mem_mb", 0)
+    elif state.startswith("CANCELLED"):
+        verdict, rc = "CANCELLED", 130
+    elif state == "NODE_FAIL":
+        verdict, rc, why = "FAILED", 1, "the node went away (power or network); run it again"
+    elif res.get("error"):
+        verdict, rc, why = "FAILED", code if isinstance(code, int) and code else 1, res["error"]
+    else:
+        rc = code if isinstance(code, int) else 1
+        verdict = "FAILED (exit %s)" % (code if code is not None else st.get("slurm_exit", "?"))
+    outs = res.get("outputs") or {}
+    copied = []
+    if rec.get("get") and outs.get("files"):
+        copied = fetch(jid, rec)
+    say("slerm-job %d: %s%s%s%s" % (jid, verdict, took, where, ": " + why if why else ""))
+    if copied:
+        say("  outputs copied into %s: %d files (%s)" % (os.path.normpath(os.path.join(rec["root"], rec.get("cwd") or
+                                                                                         ".")),
+                                                     len(copied), ", ".join(rec["get"])))
+    for g in outs.get("missing", []):
+        say("  --get %s: did not exist after the command" % g)
+    if outs.get("too_big"):
+        say("  outputs were %.1f GB, over the 2 GB limit, so nothing came back" % (outs["too_big"] / 1024 ** 3))
+    say("  full log: %s" % os.path.join(STATE, "logs", "%d.log" % jid))
+    if not os.environ.get("LATER_ID"):         # answered here, so a pending `later` wake for this job is not needed
+        later_cancel(jid)
+    return rc
+
+
+def later_cancel(jid):
+    try:
+        subprocess.run(["later", "cancel", "--tag", "slerm-job:%d" % jid, "--quiet"], capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+# ---- commands ----------------------------------------------------------------------------------------------
+
+def cmd_run(a):
+    if not a.command:
+        die("give the command after --, e.g. slerm-job run -- cargo build --release")
+    command = a.command[0] if len(a.command) == 1 else shlex.join(a.command)
+    root, chat, sub = project()
+    for g in a.get:
+        if g.startswith("/") or ".." in g.split("/"):
+            die("--get paths are relative to this folder and stay inside the project: %r" % g)
+    names = project_files(root)
+    if not names:
+        die("found no files to copy in %s" % root)
+    check_folder(root, sub, command, names)
+    check_paths(root, sub, command, names)
+    tar, nfiles, size = pack(root, names)
+    try:
+        if size > MAX_UPLOAD:
+            die("the project packs to %d MB (limit %d MB); add big folders to .gitignore" % (size >> 20,
+                                                                                          MAX_UPLOAD >> 20))
+        spec = {"chat": chat, "cmd": command, "cwd": "" if sub == "." else sub, "get": a.get, "cpus": a.cpus,
+                "mem_mb": a.mem, "minutes": a.time}
+        with open(tar, "rb") as f:
+            r = ssh_json("submit", stdin=json.dumps(spec).encode() + b"\n" + f.read())
+    finally:
+        os.unlink(tar)
+    jid = r["id"]
+    rec = dict(spec, id=jid, root=root, submitted=int(time.time()))
+    save_job(jid, rec)
+    say("slerm-job %d submitted: %d CPUs, %d MB, %d min max, %d files (%.1f MB) from %s" % (
+        jid, a.cpus, a.mem, a.time, nfiles, size / 1024 ** 2, root if sub == "." else os.path.join(root, sub)))
+    if a.later is not None:
+        note = a.later or ""
+        try:
+            lp = subprocess.run(["later", "run", "--tag", "slerm-job:%d" % jid, "--label",
+                                 "slerm-job %d (%s)" % (jid, command[:80]), "--note", note, "--",
+                                 "slerm-job", "wait", str(jid), "--wait-max", "86400"], capture_output=True, text=True)
+        except OSError as e:
+            lp = subprocess.CompletedProcess([], 127, "", str(e))
+        if lp.returncode != 0:
+            say(lp.stdout.strip() or lp.stderr.strip())
+            die("the job is running, but `later` could not set the wake-up; use slerm-job wait %d" % jid, 1)
+        say("This chat will be woken when job %d ends (outputs are copied back first). You can end your turn now."
+            % jid)
+        return 0
+    if a.detach:
+        say("Not waiting. Follow it with: slerm-job wait %d   (or cancel: slerm-job cancel %d)" % (jid, jid))
+        return 0
+    return wait_for(jid, rec, a.wait_max)
+
+
+def wait_for(jid, rec, wait_max):
+    st = follow(jid, rec, wait_max)
+    if st is None:
+        say("slerm-job %d is still running after %s. Run `slerm-job wait %d` again (600000 ms shell timeout), or "
+            "`later run -- slerm-job wait %d` to be woken when it ends." % (jid, fmt_s(wait_max), jid, jid))
+        return 3
+    return finish(jid, rec, st)
+
+
+def cmd_wait(a):
+    jid = pick_id(a.id)
+    rec = load_job(jid)
+    if not rec:
+        die("job %d was not started from this VM" % jid)
+    return wait_for(jid, rec, a.wait_max)
+
+
+def cmd_status(a):
+    jid = pick_id(a.id)
+    st = ssh_json("status", str(jid))["jobs"][0]
+    res = st.get("result") or {}
+    say("slerm-job %d: %s%s%s%s" % (jid, st["state"], " on " + st["node"] if st.get("node") else "",
+                                   ", " + st["elapsed"] if st.get("elapsed") else "",
+                                   ", exit %s" % res["exit"] if "exit" in res else ""))
+    if st.get("waiting_on") or st.get("reason"):
+        say("  waiting: " + (st.get("waiting_on") or st.get("reason")))
+    say("  $ " + (st.get("cmd") or "?"))
+    return 0
+
+
+def cmd_log(a):
+    jid = pick_id(a.id)
+    p = subprocess.run(SSH + ["log %d 0 %d" % (jid, 4 << 20)], capture_output=True)
+    lines = p.stdout.decode(errors="replace").splitlines()
+    if not a.all and len(lines) > 200:
+        say("[slerm-job] last 200 of %d lines (--all for everything)" % len(lines))
+        lines = lines[-200:]
+    say("\n".join(lines))
+    return 0
+
+
+def cmd_cancel(a):
+    jid = pick_id(a.id)
+    ssh_json("cancel", str(jid))
+    later_cancel(jid)
+    say("slerm-job %d cancelled" % jid)
+    return 0
+
+
+def cmd_list(a):
+    _, chat, _ = project()
+    rows = ssh_json("list", chat)["jobs"]
+    if not rows:
+        say("no slerm-job jobs for this chat in the last 3 days")
+    for st in rows:
+        res = st.get("result") or {}
+        say("%6d  %-11s %-14s %s" % (st["id"], st["state"][:11], ("exit %s" % res["exit"]) if "exit" in res else "",
+                                     (st.get("cmd") or "")[:90]))
+    return 0
+
+
+def cmd_nodes(a):
+    r = ssh_json("nodes")
+    for n in r["nodes"]:
+        if n["usable"]:
+            say("%-13s %2d CPUs %6.1f GB  %-10s %s" % (n["node"], n["cpus"], n["mem_mb"] / 1024, n["power"],
+                                                        n["slurm"]))
+    if r.get("ups_on_battery"):
+        say("The UPS is on battery: nodes that are off stay off until power is back.")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="slerm-job", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="op", required=True)
+    r = sub.add_parser("run", help="run COMMAND on a cluster node")
+    r.add_argument("--cpus", type=int, default=8)
+    r.add_argument("--mem", type=mem_mb, default=8192, help="e.g. 8G (default), 20G on slerm-node05")
+    r.add_argument("--time", type=minutes, default=30, help="limit, e.g. 30m (default), 2h; max 4h")
+    r.add_argument("--get", action="append", default=[], metavar="PATH",
+                   help="file or folder to copy back after the command (relative to this folder); repeatable")
+    r.add_argument("--later", nargs="?", const="", default=None, metavar="NOTE",
+                   help="do not wait: wake this chat when the job ends (NOTE = what to do next)")
+    r.add_argument("--detach", action="store_true", help="submit only")
+    r.add_argument("--wait-max", type=int, default=540, help="seconds to wait before handing back (default 540)")
+    r.add_argument("command", nargs=argparse.REMAINDER)
+    for name in ("wait", "status", "log", "cancel"):
+        p = sub.add_parser(name)
+        p.add_argument("id", nargs="?")
+        if name == "wait":
+            p.add_argument("--wait-max", type=int, default=540)
+        if name == "log":
+            p.add_argument("--all", action="store_true")
+    sub.add_parser("list")
+    sub.add_parser("nodes")
+    a = ap.parse_args()
+    if a.op == "run" and a.command and a.command[0] == "--":
+        a.command = a.command[1:]
+    try:
+        return {"run": cmd_run, "wait": cmd_wait, "status": cmd_status, "log": cmd_log, "cancel": cmd_cancel,
+                "list": cmd_list, "nodes": cmd_nodes}[a.op](a)
+    except KeyboardInterrupt:
+        say("\nslerm-job: stopped watching; the job keeps running (slerm-job wait / cancel)")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

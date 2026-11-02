@@ -1,0 +1,24 @@
+[Unit]
+Description=Code mode - later: wake a chat when a background command, timer or check is done
+After=network-online.target code-mode-firewall.service opencode-code.service
+# Same private /tmp as opencode, so a command started with `later run` sees the agent's /tmp files.
+JoinsNamespaceOf=opencode-code.service
+
+[Service]
+User=coder
+Group=coder
+WorkingDirectory=/home/coder/projects
+Environment=HOME=/home/coder
+Environment=PATH=/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/code-mode/later.env
+ExecStart=/usr/bin/python3 /usr/local/lib/code-later/code-later.py
+Restart=always
+RestartSec=2
+MemoryMax=3G
+TasksMax=1024
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

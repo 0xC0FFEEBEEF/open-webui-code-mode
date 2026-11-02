@@ -1,0 +1,14 @@
+#!/bin/sh
+# watch-ornith SESSION_ID [DIR] - open opencode's terminal UI on a running session, to watch (and talk to) Ornith.
+# An attached UI becomes where the session's tools run, so it must run exactly like opencode-code.service: same user,
+# PATH, sandbox and /tmp. Otherwise the agent's environment changes under it (found 2026-10-07: report-bug vanished
+# from PATH while a plain `sudo -u coder opencode -s` window was attached).
+set -eu
+sid=${1:?usage: watch-ornith SESSION_ID [DIR]}
+dir=${2:-/home/coder/projects}
+exec sudo systemd-run --quiet --pty --collect --uid=coder --gid=coder \
+  -p JoinsNamespaceOf=opencode-code.service -p PrivateTmp=yes \
+  -p NoNewPrivileges=yes -p ProtectSystem=full -p MemoryHigh=1536M -p MemoryMax=2G -p TasksMax=1024 \
+  -p WorkingDirectory="$dir" \
+  -E HOME=/home/coder -E PATH=/home/coder/.local/bin:/usr/local/bin:/usr/bin:/bin -E TERM="${TERM:-xterm-256color}" \
+  /usr/local/bin/opencode -s "$sid"

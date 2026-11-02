@@ -1,0 +1,14 @@
+[Unit]
+Description=Code mode - keep the coder user off the LAN and fence the opencode port
+Before=opencode-code.service
+After=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/code-mode/firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/code-mode/firewall.nft
+ExecStop=/usr/sbin/nft delete table inet code_mode
+
+[Install]
+WantedBy=multi-user.target

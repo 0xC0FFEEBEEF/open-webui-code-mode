@@ -1,0 +1,15 @@
+[Unit]
+Description=code-deploy: Features deployer service (cryoai)
+After=network.target openwebui.service
+
+[Service]
+User=owui
+Group=owui
+ExecStart=/usr/bin/python3 /home/owui/.local/lib/code-deploy/code-deploy.py serve
+Restart=on-failure
+RestartSec=2
+PrivateTmp=yes
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

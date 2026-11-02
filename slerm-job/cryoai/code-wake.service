@@ -1,0 +1,15 @@
+[Unit]
+Description=code-wake: delivers `later` wake-ups from VM 129 into Open WebUI chats
+After=network.target openwebui.service
+
+[Service]
+User=owui
+Group=owui
+ExecStart=/usr/bin/python3 /home/owui/.local/lib/code-wake/code-wake.py
+Restart=always
+RestartSec=5
+PrivateTmp=yes
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+{
+  "name": "code-mode",
+  "private": true,
+  "description": "Test-only dependency for tests/page (the page script itself uses no libraries).",
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  }
+}

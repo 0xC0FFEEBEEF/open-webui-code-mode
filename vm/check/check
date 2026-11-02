@@ -1,0 +1,712 @@
+#!/usr/bin/env python3
+"""check - read a project's code and report what would break, before anyone runs it.
+
+    check                 the whole project (the git root, else this folder)
+    check FILE_OR_DIR...  the same checks, showing only the findings in those paths
+
+It ends with `CHECK: PASS` or `CHECK: FAIL` (exit 1). ERRORS are things that will break when the code runs:
+undefined names, syntax errors, files a page links to that don't exist, an element id the code needs that no page
+has. WARNINGS are likely mistakes to look at one by one. It reads code; it never runs it and never changes a file.
+
+Web pages are checked the way a browser loads them: every script a page loads (files and inline <script> blocks)
+shares its globals, inline `onclick=...` handlers are checked against them, and a script that no page loads is
+checked as a Node.js file. If a name really is a global from a library, say so in that file: /* global Name */
+"""
+import difflib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+from html.parser import HTMLParser
+
+HOME = os.environ.get("CODE_CHECK_HOME", "/opt/code-check")
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "env", "__pycache__", "dist", "build", ".next", ".cache",
+             ".pytest_cache", ".mypy_cache", ".ruff_cache", "site-packages", "coverage", ".idea", ".vscode"}
+VENDOR_DIRS = {"vendor", "vendors", "third_party", "third-party", "lib", "libs"}
+MAX_BYTES = 600_000
+MAX_ERRORS, MAX_WARNINGS = 40, 25
+
+# Globals that well-known browser libraries create. A page that loads an outside script may use them undeclared.
+KNOWN_LIB_GLOBALS = set("""
+L Chart d3 THREE $ jQuery _ io Vue React ReactDOM axios moment dayjs gsap ScrollTrigger Swiper AOS Plotly echarts
+Papa marked DOMPurify hljs Prism lucide feather Alpine htmx tailwind confetti QRCode Sortable Fuse Dexie Hls mapboxgl
+maplibregl turf topojson luxon ApexCharts Highcharts google bootstrap Popper tippy Typed particlesJS tsParticles p5
+PIXI Phaser Matter Tone katex MathJax mermaid XLSX JSZip saveAs html2canvas jspdf jsPDF pdfjsLib Cesium ol esri SunCalc
+satellite WebFont lottie Howl Howler ko Mustache Handlebars nunjucks ejs Quill CodeMirror monaco ace Tabulator DataTable
+Chartist c3 vis cytoscape go Vivus Rellax ScrollReveal Lenis barba Splitting SplitType Masonry imagesLoaded Flickity
+Glide noUiSlider flatpickr Choices Cleave IMask validator uuid nanoid supabase firebase Stripe anime Draggable
+MotionPathPlugin TextPlugin Flip Observer preact htm lit uPlot Globe ForceGraph deck protomaps pmtiles
+""".split())
+
+# TypeScript findings that are reliable in plain JavaScript. Everything else it says about untyped JS is noise.
+TS_ERRORS = {2304, 2552, 2551, 2448, 2449, 2450, 2451, 2300, 2588, 18004, 2305, 2614, 2724, 1192, 2580, 2591, 2584,
+             2845, 90001}
+TS_WARNINGS = {2393, 2554, 2555, 2349, 2351, 2367, 7027, 7028, 2307, 2792}
+TS_NOT_SYNTAX = {1259, 1261, 1149, 1208, 1205, 1286, 1287, 1295}  # in the 1000s but about build settings, not the code
+NAME_RE = re.compile(r"Cannot find name '([^']+)'")
+
+
+class Findings:
+    def __init__(self, root):
+        self.root, self.items, self.seen, self.notes = root, [], set(), []
+
+    def add(self, level, path, line, msg):
+        rel = os.path.relpath(path, self.root) if os.path.isabs(path) else path
+        key = (level, rel, line, msg)
+        if key not in self.seen:
+            self.seen.add(key)
+            self.items.append((level, rel, int(line or 0), msg))
+
+    def note(self, text):
+        if text not in self.notes:
+            self.notes.append(text)
+
+
+def read(path):
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > MAX_BYTES or b"\0" in raw[:4000]:
+        return None
+    return raw.decode("utf-8", "replace")
+
+
+def is_vendor(path, text):
+    """Library code somebody else wrote: minified bundles and files in vendor folders. Loaded, never checked."""
+    parts = set(os.path.normpath(path).split(os.sep)[:-1])
+    if parts & VENDOR_DIRS or re.search(r"[.-]min\.(js|css)$", path) or text is None:
+        return True
+    lines = text.count("\n") + 1
+    return len(text) > 20_000 and len(text) / lines > 400
+
+
+def line_of(text, pos):
+    return text.count("\n", 0, pos) + 1
+
+
+def close(name, candidates):
+    got = difflib.get_close_matches(name, list(candidates), n=1, cutoff=0.75)
+    return got[0] if got else ""
+
+
+# ---------------------------------------------------------------------------------------------------------- HTML
+class Page(HTMLParser):
+    """One HTML file: its ids, the scripts and styles it loads, its inline handlers and the local files it links."""
+
+    def __init__(self, path, text):
+        super().__init__(convert_charrefs=True)
+        self.path, self.text = path, text
+        self.ids, self.scripts, self.styles, self.handlers, self.refs = [], [], [], [], []
+        self._open = None
+        self.templated = bool(re.search(r"\{\{|\{%|<%|<\?php", text))
+        try:
+            self.feed(text)
+            self.close()
+        except Exception:  # a page too broken to parse still gets its other checks
+            pass
+
+    def handle_starttag(self, tag, attrs):
+        line = self.getpos()[0]
+        a = {k.lower(): (v or "") for k, v in attrs}
+        if a.get("id"):
+            self.ids.append((a["id"], line))
+        for k, v in a.items():
+            if k.startswith("on") and len(k) > 2 and v.strip():
+                self.handlers.append((line, k, v))
+        ref = {"script": "src", "img": "src", "source": "src", "video": "src", "audio": "src", "iframe": "src",
+               "link": "href", "a": "href", "form": "action"}.get(tag)
+        if ref and a.get(ref):
+            self.refs.append((line, tag, a[ref].strip()))
+        if tag == "script":
+            self._open = {"kind": "script", "src": a.get("src", "").strip(), "type": a.get("type", "").strip().lower(),
+                          "line": line, "text": "", "pos": None}
+            self.scripts.append(self._open)
+        elif tag == "style":
+            self._open = {"kind": "style", "line": line, "text": "", "pos": None}
+            self.styles.append(self._open)
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self._open = None
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style"):
+            self._open = None
+
+    def handle_data(self, data):
+        if self._open is not None:
+            if self._open["pos"] is None:
+                self._open["pos"] = self.getpos()
+            self._open["text"] += data
+
+    @staticmethod
+    def padded(block):
+        """The block's text moved to the line and column it has in the HTML file, so reported positions match."""
+        line, col = block["pos"] or (block["line"], 0)
+        return "\n" * (line - 1) + " " * col + block["text"]
+
+
+def local_target(ref):
+    """The file a link points at, or None for anything that is not a plain relative file link."""
+    if not ref or ref.startswith(("#", "data:", "mailto:", "tel:", "javascript:", "blob:", "about:", "//", "/")):
+        return None
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*:", ref) or re.search(r"\{\{|\{%|<%|\$\{", ref):
+        return None
+    return urllib.parse.unquote(ref.split("#")[0].split("?")[0]) or None
+
+
+def resolve_ref(page_path, target, root):
+    """Where a page's relative link lands on disk. A plain page is served from its own folder. A page that a server
+    renders (it sits in templates/ or views/, or the project has its own server) is served at a route instead, so
+    "static/app.js" is also looked up from the project root and its usual static folders. 2026-10-13: a FastAPI
+    project's templates/index.html had both its stylesheet and script reported as missing."""
+    first = os.path.normpath(os.path.join(os.path.dirname(page_path), target))
+    if os.path.exists(first):
+        return first
+    top = os.path.relpath(os.path.dirname(page_path), root).split(os.sep)[0]
+    if top in ("templates", "views") or has_server(root):
+        for folder in ("", "static", "public"):
+            alt = os.path.normpath(os.path.join(root, folder, target))
+            if os.path.commonpath([root, alt]) == root and os.path.exists(alt):
+                return alt
+    return first
+
+
+def external_script(src):
+    return bool(src) and (src.startswith(("http://", "https://", "//")))
+
+
+def check_pages(pages, F, root, js_texts):
+    """Links, ids, handlers; returns the TypeScript programs for the pages' scripts."""
+    programs, handler_maps = [], {}
+    for page in pages:
+        seen_ids = {}
+        for ident, line in page.ids:
+            if ident in seen_ids and "{" not in ident:
+                F.add("warning", page.path, line, f'id="{ident}" is used twice on this page (also line {seen_ids[ident]}); '
+                      "getElementById finds only the first")
+            seen_ids.setdefault(ident, line)
+        for line, tag, ref in page.refs:
+            if ref.startswith("/") and not ref.startswith("//") and tag != "a" and not page.templated:
+                F.add("warning", page.path, line, f'"{ref}" starts with "/": it breaks in the Preview panel, which serves '
+                      "the project under its own path. Use a relative path")
+            target = local_target(ref)
+            if target is None:
+                continue
+            full = resolve_ref(page.path, target, root)
+            routed = tag in ("a", "form") and has_server(root) and not os.path.splitext(target)[1]
+            if not os.path.exists(full) and not routed:  # "about" may be a route of the project's server; "about.html" is a file
+                folder = os.path.dirname(full)
+                near = close(os.path.basename(full), os.listdir(folder) if os.path.isdir(folder) else [])
+                F.add("error", page.path, line, f'<{tag}> points to "{ref}", which does not exist'
+                      + (f' (did you mean "{near}"?)' if near else ""))
+        files, libs_loaded, module_page = [], [], False
+        for n, s in enumerate(page.scripts, 1):
+            if s["type"] and s["type"] not in ("module", "text/javascript", "application/javascript", "text/babel"):
+                if s["type"] in ("application/json", "application/ld+json", "importmap") and s["text"].strip() \
+                        and not re.search(r"\{\{|\{%", s["text"]):
+                    try:
+                        json.loads(s["text"])
+                    except ValueError as e:
+                        F.add("error", page.path, s["line"], f'<script type="{s["type"]}"> is not valid JSON: {e}')
+                continue
+            if s["type"] == "text/babel":
+                F.note(f"{os.path.relpath(page.path, root)}: JSX in <script type=\"text/babel\"> is not checked")
+                continue
+            if s["src"]:
+                if external_script(s["src"]):
+                    libs_loaded.append(s["src"])
+                    continue
+                target = local_target(s["src"])
+                full = resolve_ref(page.path, target, root) if target else None
+                if full and os.path.isfile(full):
+                    if is_vendor(full, read(full)):
+                        libs_loaded.append(s["src"])
+                    else:
+                        files.append({"path": full})
+                continue
+            text = s["text"]
+            if not text.strip():
+                continue
+            if re.search(r"\{\{|\{%|<%", text):
+                F.note(f"{os.path.relpath(page.path, root)}:{s['line']}: inline script with template tags is not checked")
+                continue
+            body = Page.padded(s)
+            if s["type"] == "module":
+                module_page = True
+                body += "\nexport {};"
+            virtual = f"{page.path}.inline{n}.js"
+            files.append({"path": virtual, "text": body})
+            js_texts[virtual] = (page.path, body)
+        if page.handlers and not page.templated:
+            lines, hmap = [], {}
+            for i, (line, attr, code) in enumerate(page.handlers, 1):
+                lines.append(f"function __handler{i}(event) {{ {' '.join(code.split())} }}")
+                hmap[i] = (line, attr)
+            hpath = f"{page.path}.handlers.js"
+            files.append({"path": hpath, "text": "\n".join(lines)})
+            handler_maps[hpath] = hmap
+        if files:
+            programs.append({"id": page.path, "kind": "browser", "root": root, "files": files, "page": True,
+                             "libs": libs_loaded, "module_page": module_page})
+    return programs, handler_maps
+
+
+_server = {}
+
+
+def has_server(root):
+    """Does the project serve its own routes (then a link to /about or a form action is not a missing file)?"""
+    if root not in _server:
+        found = False
+        for name in os.listdir(root):
+            if name.endswith((".py", ".js", ".mjs", ".ts")) and os.path.isfile(os.path.join(root, name)):
+                text = read(os.path.join(root, name)) or ""
+                if re.search(r"Flask\(|FastAPI\(|http\.server|createServer\(|express\(\)|aiohttp|BaseHTTPRequestHandler"
+                             r"|Bottle\(|Starlette\(|Hono\(|fastify\(", text):
+                    found = True
+                    break
+        _server[root] = found
+    return _server[root]
+
+
+# ---------------------------------------------------------------------------------------------------- JavaScript
+def run_ts(programs):
+    if not programs:
+        return {}
+    driver = os.path.join(HOME, "tscheck.cjs")
+    if not os.path.isfile(driver):
+        return None
+    payload = {"programs": [{k: p[k] for k in ("id", "kind", "root", "files")} for p in programs]}
+    try:
+        r = subprocess.run(["node", driver], input=json.dumps(payload), capture_output=True, text=True, timeout=240,
+                           env={**os.environ, "CODE_CHECK_HOME": HOME})
+        return {p["id"]: p for p in json.loads(r.stdout)["programs"]}
+    except Exception:
+        return None
+
+
+def declared_elsewhere(name, js_texts, root):
+    """Where a name is declared, if anywhere: the usual cause is a declaration this line cannot see."""
+    decl = re.compile(r"\b(?:const|let|var|function\*?|class)\s+" + re.escape(name) + r"\b")
+    for vpath, (real, text) in js_texts.items():
+        m = decl.search(text or "")
+        if m:
+            return f"{os.path.relpath(real, root)}:{line_of(text, m.start())}"
+    return ""
+
+
+def report_ts(programs, results, handler_maps, js_texts, F, root):
+    undefined, broken_lines = {}, set()  # (file, name, ...) -> [lines]; lines with a syntax error
+    every = "\n".join(t or "" for _, t in js_texts.values())
+    # window.App = ... in one script makes a bare `App` valid in every other one
+    window_globals = set(re.findall(r"\b(?:window|globalThis|self)\.([A-Za-z_$][\w$]*)\s*=(?!=)", every))
+    window_globals |= set(re.findall(r"""\b(?:window|globalThis|self)\[\s*["']([A-Za-z_$][\w$]*)["']\s*\]\s*=(?!=)""", every))
+    for p in programs:
+        res = results.get(p["id"])
+        if not res:
+            continue
+        if res.get("failed"):
+            F.note(f"{os.path.relpath(p['id'], root)}: the JavaScript check could not run ({res['failed'][:120]})")
+            continue
+        libs = "".join(re.sub(r"[^a-z0-9]", "", s.lower()) for s in p.get("libs", []))
+        for d in res["diagnostics"]:
+            code, vfile, line, msg = d["code"], d["file"], d["line"], d["message"]
+            syntax = (1000 <= code < 2000 and code not in TS_NOT_SYNTAX) or 8000 <= code < 8100
+            if not (syntax or code in TS_ERRORS or code in TS_WARNINGS):
+                continue
+            if code in (2451, 2300) and not d.get("own"):
+                continue  # only clashes with the browser's own names (const name, let status): allowed
+            real, text = js_texts.get(vfile, (vfile, None))
+            handler = handler_maps.get(vfile)
+            if handler:
+                real = vfile[: -len(".handlers.js")]
+                hline, attr = handler.get(line, (0, "handler"))
+                line, where = hline, f"{attr}= "
+                if not (syntax or code in (2304, 2552)):
+                    continue
+            else:
+                where = ""
+            if code in (2304, 2552, 2580, 2591, 2584):
+                m = NAME_RE.search(msg)
+                name = m.group(1) if m else ""
+                if not name:
+                    continue
+                src = text if text is not None else (read(real) or "")
+                declared = set(re.findall(r"/\*\s*globals?\s+([^*]+)\*/", src))
+                declared = {n.split(":")[0].strip() for g in declared for n in g.split(",")}
+                if name in declared or name in window_globals:
+                    continue
+                rows = src.split("\n")
+                before = rows[line - 1][: d["col"] - 1] if not handler and 0 < line <= len(rows) else ""
+                if re.search(r"\btypeof\s*\(?\s*$", before):
+                    continue  # `typeof X` is how code asks whether X exists
+                if p.get("libs") and (name in KNOWN_LIB_GLOBALS or (len(name) > 1 and name.lower() in libs)):
+                    continue
+                if code in (2580, 2591, 2584) and p["kind"] == "browser":
+                    F.add("error", real, line, f"{where}'{name}' is a Node.js name; it does not exist in a browser page")
+                    continue
+                is_module = vfile.endswith(".mjs") or (text or "").endswith("\nexport {};")
+                undefined.setdefault((real, name, where, p["kind"], bool(handler), bool(p.get("module_page")),
+                                      is_module), []).append(line)
+                continue
+            if code == 2307:
+                m = re.search(r"Cannot find module '([^']+)'", msg)
+                spec = m.group(1) if m else ""
+                if spec.startswith("."):
+                    F.add("error", real, line, f"imports '{spec}', which does not exist")
+                elif p["kind"] != "browser" and not spec.startswith(("http:", "https:", "node:")):
+                    F.add("warning", real, line, f"needs the package '{spec}', which is not installed in this project")
+                continue
+            if code == 2451 and handler:
+                continue
+            level = "error" if (syntax or code in TS_ERRORS) else "warning"
+            if syntax:
+                broken_lines.add((real, line))
+            F.add(level, real, line, where + plain(code, msg))
+    declared_names = set(re.findall(r"\b(?:const|let|var|function\*?|class)\s+([A-Za-z_$][\w$]*)", every))
+    for (real, name, where, kind, in_handler, module_page, is_module), lines in undefined.items():
+        lines = sorted(set(l for l in lines if (real, l) not in broken_lines))
+        if not lines:
+            continue  # the same line has a syntax error; that one comes first
+        msg = f"{where}'{name}' is not defined"
+        if len(lines) > 1:
+            msg += f" (also on line{'s' if len(lines) > 2 else ''} {', '.join(map(str, lines[1:6]))})"
+        at = declared_elsewhere(name, js_texts, root)
+        if in_handler and module_page and at:
+            msg += f". It is declared at {at}, but inside a module script, which inline handlers cannot see: use " \
+                   "addEventListener in the script, or assign it to window"
+        elif at:
+            msg += f". A '{name}' is declared at {at}, but not where this line can see it (inside another function or " \
+                   "block, or in a file this page does not load)"
+        elif re.search(r"(?m)^\s*" + re.escape(name) + r"\s*=(?!=)", every) and not is_module:
+            F.add("warning", real, lines[0], f"{where}'{name}' is assigned without const, let or var: it only works "
+                  "by accident (and throws in a module or strict-mode script). Declare it")
+            continue
+        else:
+            near = close(name, declared_names)
+            msg += (f". Did you mean '{near}'?" if near else ": nothing this page loads declares it"
+                    if kind == "browser" else "")
+            if kind == "browser" and not near:
+                msg += f". If a library creates it, add /* global {name} */ at the top of the file"
+        F.add("error", real, lines[0], msg)
+
+
+def plain(code, msg):
+    msg = msg.rstrip(".")
+    if code == 2588:
+        return msg + " (declared with const): this throws when it runs"
+    if code == 2451:
+        return msg + ": two scripts on the same page declare it, and the second one stops with a SyntaxError"
+    if code == 2393:
+        return "the same function is defined twice; only the last one is used"
+    if code in (2554, 2555):
+        return msg + " (extra arguments are ignored)"
+    return msg
+
+
+NODE_ONLY = re.compile(r"(?<![.\w$])(require\(\s*['\"]|module\.exports\b|__dirname\b|process\.env\b)")
+
+
+def check_browser_only(programs, js_texts, F):
+    """A script that a page loads runs in the browser: Node's require() and friends do not exist there."""
+    for p in programs:
+        if p["kind"] != "browser" or not p.get("page"):
+            continue
+        for f in p["files"]:
+            real, text = js_texts.get(f["path"], (f["path"], None))
+            m = NODE_ONLY.search(text or "")
+            if m and "typeof " + m.group(1)[:6] not in (text or ""):
+                what = m.group(1).rstrip("('\" ")
+                F.add("error", real, line_of(text, m.start()), f"{what} belongs to Node.js; a page's script runs in the "
+                      "browser, where it does not exist (load the other file with a <script> tag or an import)")
+
+
+ID_CALL = re.compile(r"getElementById\(\s*(['\"])([^'\"${}]+)\1\s*\)(\s*\??\.?)")
+SEL_CALL = re.compile(r"querySelector\(\s*(['\"])#([A-Za-z_][\w-]*)\1\s*\)(\s*\??\.?)")
+FETCH_ROOT = re.compile(r"\b(?:fetch|EventSource|WebSocket)\(\s*(['\"`])(/(?!/)[^'\"`]*)\1")
+
+
+def check_ids(js_texts, all_text, pages, F, node_files):
+    if not pages:
+        return
+    known = {i for p in pages for i, _ in p.ids}
+    known |= set(re.findall(r"""\bid\s*=\s*\\?["']([^"'\\${}<>\s]+)""", all_text))
+    known |= set(re.findall(r"""\.id\s*=\s*["'`]([^"'`${}]+)""", all_text))
+    known |= set(re.findall(r"""setAttribute\(\s*["']id["']\s*,\s*["'`]([^"'`${}]+)""", all_text))
+    known |= set(re.findall(r"""\bid\s*:\s*["'`]([^"'`${}]+)""", all_text))
+    dynamic = bool(re.search(r"""\bid\s*=\s*\\?["'`]?[^"'`\s>]*(\$\{|\{\{|["']\s*\+)""", all_text)
+                   or re.search(r"""\.id\s*=\s*(?!["'`])""", all_text))
+    for vpath, (real, text) in js_texts.items():
+        if vpath in node_files or not text:
+            continue
+        for rx in (ID_CALL, SEL_CALL):
+            for m in rx.finditer(text):
+                ident, after = m.group(2), m.group(3).strip()
+                if ident in known:
+                    continue
+                near = close(ident, known)
+                hint = f' (did you mean "{near}"?)' if near else ""
+                if dynamic and not near:
+                    continue  # ids built at run time: can't tell
+                if after == ".":
+                    F.add("error", real, line_of(text, m.start()), f'no element has id="{ident}"{hint}, and the result is '
+                          "used straight away: this throws \"Cannot read properties of null\"")
+                else:
+                    F.add("warning", real, line_of(text, m.start()), f'no element has id="{ident}"{hint}: this returns null')
+        for m in FETCH_ROOT.finditer(text):
+            F.add("warning", real, line_of(text, m.start()), f'"{m.group(2)[:60]}" starts with "/": it breaks in the '
+                  f'Preview panel. Use a relative address ("{m.group(2)[1:60]}")')
+
+
+# ----------------------------------------------------------------------------------------------------------- CSS
+def check_css(css_blocks, all_text, F, root):
+    """css_blocks: [(real path, padded text)]. Parse errors are errors; unknown properties and units are warnings."""
+    defined = set(re.findall(r"(--[A-Za-z0-9_-]+)\s*:", all_text))
+    defined |= set(re.findall(r"""setProperty\(\s*["'`](--[A-Za-z0-9_-]+)""", all_text))
+    defined |= set(re.findall(r"@property\s+(--[A-Za-z0-9_-]+)", all_text))
+    for real, text in css_blocks:
+        for m in re.finditer(r"var\(\s*(--[A-Za-z0-9_-]+)\s*([,)])", text):
+            name = m.group(1)
+            if name not in defined and m.group(2) == ")":
+                near = close(name, defined)
+                F.add("warning", real, line_of(text, m.start()), f"{name} is used but never defined, so this declaration "
+                      "is ignored" + (f" (did you mean {near}?)" if near else ""))
+    biome = os.path.join(HOME, "biome", "biome")
+    if not css_blocks or not os.access(biome, os.X_OK):
+        return
+    with tempfile.TemporaryDirectory(prefix="check-css-") as tmp:
+        names = {}
+        for i, (real, text) in enumerate(css_blocks):
+            name = f"f{i}.css"
+            names[name] = (real, text)
+            with open(os.path.join(tmp, name), "w") as f:
+                f.write(text)
+        try:
+            r = subprocess.run([biome, "lint", "--reporter=json", "--max-diagnostics=200", *sorted(names)], cwd=tmp,
+                               capture_output=True, text=True, timeout=90)
+            data = json.loads(r.stdout[r.stdout.index("{"):])
+        except Exception:
+            return
+        for d in data.get("diagnostics", []):
+            loc = d.get("location") or {}
+            got = names.get(os.path.basename(str(loc.get("path", ""))))
+            if not got:
+                continue
+            real, text = got
+            start, end = loc.get("start") or {}, loc.get("end") or {}
+            line, cat, msg = start.get("line", 0), str(d.get("category", "")), str(d.get("message", "")).rstrip(".")
+            rows = text.split("\n")
+            snippet = ""
+            if line and line == end.get("line") and line <= len(rows):
+                snippet = rows[line - 1][start.get("column", 1) - 1: end.get("column", 1) - 1].strip()
+            if cat == "parse":
+                F.add("error", real, line, f"CSS syntax error: {msg}. Browsers drop the rules around it "
+                      "(look for a missing } or ; just above)")
+            elif cat.startswith("lint/correctness/noUnknown") or cat.startswith("lint/correctness/noInvalid") \
+                    or cat.startswith("lint/correctness/noMissingVarFunction"):
+                F.add("warning", real, line, f"CSS: {msg}" + (f' ("{snippet}")' if snippet and snippet not in msg else "")
+                      + ": browsers ignore this declaration if it is a typo")
+
+
+# -------------------------------------------------------------------------------------------- Python, JSON, shell
+RUFF_ERRORS = ("E9", "F821", "F822", "F823", "F5", "F6", "F7", "PLE")
+RUFF_WARNINGS = ("F841", "F811", "B006", "B018", "B023", "F402", "PLW0602", "PLW0127", "PLW0129")
+
+
+def check_python(root, py_files, F):
+    if not py_files:
+        return
+    ruff = os.path.join(HOME, "venv", "bin", "ruff")
+    if not os.access(ruff, os.X_OK):
+        for path in py_files:  # no ruff: at least the syntax
+            try:
+                compile(read(path) or "", path, "exec")
+            except SyntaxError as e:
+                F.add("error", path, e.lineno, f"syntax error: {e.msg}")
+        return
+    try:
+        r = subprocess.run([ruff, "check", "--isolated", "--no-cache", "--exit-zero", "--output-format", "json",
+                            "--select", ",".join(RUFF_ERRORS + RUFF_WARNINGS), *py_files],
+                           cwd=root, capture_output=True, text=True, timeout=120)
+        items = json.loads(r.stdout or "[]")
+    except Exception:
+        return
+    for d in items:
+        code, msg = d.get("code") or "", d.get("message", "")
+        line = (d.get("location") or {}).get("row", 0)
+        if not code or code == "invalid-syntax":
+            F.add("error", d["filename"], line, f"syntax error: {msg}")
+        elif code.startswith(RUFF_ERRORS):
+            F.add("error", d["filename"], line, msg + (": this raises NameError when the line runs" if code == "F821" else ""))
+        else:
+            F.add("warning", d["filename"], line, msg)
+
+
+def check_json(paths, F):
+    for path in paths:
+        name = os.path.basename(path)
+        if name.startswith(("tsconfig", "jsconfig")) or name in ("package-lock.json", "biome.json", "devcontainer.json"):
+            continue
+        text = read(path)
+        if text is None or not text.strip():
+            continue
+        try:
+            json.loads(text)
+        except ValueError as e:
+            F.add("error", path, getattr(e, "lineno", 0), f"not valid JSON: {getattr(e, 'msg', e)}")
+
+
+def check_shell(paths, F):
+    for path in paths:
+        text = read(path) or ""
+        first = text.split("\n", 1)[0]
+        if path.endswith(".sh") or re.match(r"#!.*\b(ba)?sh\b", first):
+            shell = "sh" if re.match(r"#!\s*/bin/sh\b|#!.*\bdash\b", first) else "bash"
+            r = subprocess.run([shell, "-n", path], capture_output=True, text=True)
+            if r.returncode:
+                m = re.search(r"line (\d+): (.*)", r.stderr)
+                F.add("error", path, m.group(1) if m else 0, "shell syntax error: " + (m.group(2) if m else r.stderr.strip()[:200]))
+                continue
+            try:
+                r = subprocess.run(["shellcheck", "-f", "json", "-S", "warning", path], capture_output=True, text=True, timeout=60)
+                for d in json.loads(r.stdout or "[]"):
+                    F.add("error" if d.get("level") == "error" else "warning", path, d.get("line", 0),
+                          f"{d.get('message', '')} (SC{d.get('code')})")
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------------------------------------- main
+def project_root(start):
+    try:
+        r = subprocess.run(["git", "-C", start, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=10)
+        top = r.stdout.strip()
+        if r.returncode == 0 and top and top != os.path.expanduser("~"):
+            return top
+    except Exception:
+        pass
+    return start
+
+
+def main(argv):
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    cwd = os.getcwd()
+    root = os.path.realpath(project_root(cwd))
+    only = [os.path.realpath(a) for a in argv]
+    for a, real in zip(argv, only):
+        if not os.path.exists(real):
+            print(f"check: {a}: no such file or folder")
+            return 2
+    F = Findings(root)
+    files = {"html": [], "js": [], "css": [], "py": [], "json": [], "sh": [], "other": []}
+    skipped_code = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
+        for name in sorted(filenames):
+            if name.startswith("."):
+                continue
+            path, ext = os.path.join(dirpath, name), os.path.splitext(name)[1].lower()
+            kind = {".html": "html", ".htm": "html", ".js": "js", ".mjs": "js", ".cjs": "js", ".css": "css",
+                    ".py": "py", ".json": "json", ".sh": "sh"}.get(ext)
+            if ext in (".ts", ".tsx", ".jsx", ".vue", ".svelte"):
+                skipped_code.add(ext)
+            if kind:
+                files[kind].append(path)
+    count = sum(len(v) for v in files.values())
+    if count > 1500:
+        print(f"check: {count} files is more than check reads at once; name the folders to check (check src/)")
+        return 2
+
+    pages, js_texts, css_blocks, text_parts = [], {}, [], []
+    for path in files["html"]:
+        text = read(path)
+        if text is None:
+            continue
+        text_parts.append(text)
+        page = Page(path, text)
+        pages.append(page)
+        for s in page.styles:
+            if s["text"].strip() and not re.search(r"\{\{|\{%", s["text"]):
+                css_blocks.append((path, Page.padded(s)))
+    own_js = []
+    for path in files["js"]:
+        text = read(path)
+        if is_vendor(path, text):
+            continue
+        own_js.append(path)
+        js_texts[path] = (path, text)
+        text_parts.append(text)
+    for path in files["css"]:
+        text = read(path)
+        if not is_vendor(path, text):
+            css_blocks.append((path, text))
+            text_parts.append(text)
+    for path in files["py"]:
+        text_parts.append(read(path) or "")
+
+    programs, handler_maps = check_pages(pages, F, root, js_texts)
+    all_text = "\n".join(text_parts)
+    results = run_ts(programs)
+    if results is None:
+        F.note("the JavaScript check is not installed here; JavaScript was not checked")
+        results = {}
+    covered = {f for res in results.values() for f in res.get("files", [])}
+    rest = []
+    for path in own_js:  # scripts no page loads: server code, workers, tools
+        if path in covered:
+            continue
+        text = js_texts[path][1]
+        node = bool(re.search(r"\brequire\(|\bprocess\.|module\.exports|__dirname|from\s+['\"](node:|fs|http|path|express)", text))
+        dom = bool(re.search(r"\bdocument\.|\bwindow\.|\blocalStorage\b|\bnavigator\.|\bself\.", text))
+        rest.append({"id": path, "kind": "node" if node and not dom else "browser" if dom and not node else "any",
+                     "root": root, "files": [{"path": path}], "libs": ["*"] if dom else []})
+    if rest:
+        more = run_ts(rest) or {}
+        results.update(more)
+        programs += rest
+    report_ts(programs, results, handler_maps, js_texts, F, root)
+    check_browser_only(programs, js_texts, F)
+    check_ids(js_texts, all_text, pages, F, {p["id"] for p in rest if p["kind"] == "node"})
+    check_css(css_blocks, all_text, F, root)
+    check_python(root, files["py"], F)
+    check_json(files["json"], F)
+    check_shell(files["sh"], F)
+    if skipped_code:
+        F.note("not checked: " + ", ".join(sorted(skipped_code)) + " files (run the project's own build or type check)")
+
+    def shown(rel):
+        full = os.path.join(root, rel)
+        return not only or any(full == o or full.startswith(o + os.sep) for o in only)
+
+    errors = sorted((i for i in F.items if i[0] == "error" and shown(i[1])), key=lambda i: (i[1], i[2]))
+    warnings = sorted((i for i in F.items if i[0] == "warning" and shown(i[1])), key=lambda i: (i[1], i[2]))
+    kinds = ", ".join(f"{len(v)} {k}" for k, v in files.items() if v)
+    print(f"check: {count} files in {os.path.basename(root)}/ ({kinds or 'nothing to check'})")
+    for title, items, cap in (("ERRORS - these break when the code runs. Fix every one:", errors, MAX_ERRORS),
+                              ("WARNINGS - likely mistakes. Look at each: fix it, or be sure it is fine:", warnings, MAX_WARNINGS)):
+        if items:
+            print("\n" + title)
+            for _, rel, line, msg in items[:cap]:
+                print(f"  {rel}:{line}: {msg}" if line else f"  {rel}: {msg}")
+            if len(items) > cap:
+                print(f"  ... and {len(items) - cap} more")
+    for n in F.notes:
+        print("note: " + n)
+    w = f"{len(warnings)} warning{'s' if len(warnings) != 1 else ''}"
+    if errors:
+        print(f"\nCHECK: FAIL - {len(errors)} error{'s' if len(errors) != 1 else ''}, {w}")
+        return 1
+    print(f"\nCHECK: PASS - no errors, {w}. This reads the code; it does not run it: still run and test it.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

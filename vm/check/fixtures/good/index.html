@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="css/site.css?v=2">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5/papaparse.min.js"></script>
+<script src="vendor/tinylib.js"></script>
+<script type="application/json" id="boot">{"a": 1}</script>
+<style>
+:root { --ink: #111; }
+.card { color: var(--ink); background: var(--maybe, #fff); text-wrap: balance; field-sizing: content; }
+@container (min-width: 30rem) { .card { display: grid; } }
+</style>
+</head><body onload="boot()">
+<div id="map"></div><ul id="rows"></ul><form onsubmit="return go(event)"><input id="q" oninput="this.value = this.value.trim()"></form>
+<a href="about.html#team">About</a> <a href="mailto:x@y.z">Mail</a> <a href="#top">Top</a>
+<script src="js/state.js"></script>
+<script src="js/app.js"></script>
+<script>
+  const name = "dashboard", status = "ok";           // browser names, legal to shadow
+  let event2 = null;
+  function boot() { App.start(); render(state.items); if (typeof Chart !== "undefined") { console.log("chart"); } }
+  function go(e) { e.preventDefault(); return false; }
+  const map = L.map("map"); Papa.parse("a,b"); tinylib.init();
+  const row = document.getElementById("row-" + 3);
+  document.getElementById("q").focus();
+  document.getElementById("made").textContent = "x";
+  const maybe = document.getElementById("optional-widget");
+  if (maybe) maybe.remove();
+  counter = 1;
+  fetch("api/rows").then(r => r.json());
+  navigator.clipboard?.writeText("x");
+  window.addEventListener("load", () => { document.body.dataset.ready = "1"; });
+</script>
+<script type="module">
+  import { fmt } from "./js/util.mjs";
+  import confetti from "https://cdn.skypack.dev/canvas-confetti";
+  const data = await fetch("api/x").then(r => r.json());
+  console.log(fmt(data), confetti);
+</script>
+</body></html>

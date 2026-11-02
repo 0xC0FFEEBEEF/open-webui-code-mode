@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ideas</title>
+<style>
+  :root { --bg: #0a0a0b; --line: #232326; --text: #e9e7e2; --dim: #8b8a86; --mark: #e9e7e2;
+          --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column;
+         font: 14px/1.45 "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 24px; padding: 14px 20px 0; }
+  h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+  header p { margin: 0 0 0 auto; color: var(--dim); font-size: 13px; }
+  nav { display: flex; gap: 22px; padding: 12px 20px 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  nav button { all: unset; cursor: pointer; padding: 0 0 10px; color: var(--dim); white-space: nowrap;
+               font: 12px/1 var(--mono); letter-spacing: 0.04em; border-bottom: 1px solid transparent; margin-bottom: -1px; }
+  nav button:hover { color: var(--text); }
+  nav button:focus-visible { outline: 1px solid var(--dim); outline-offset: 4px; }
+  nav button[aria-pressed="true"] { color: var(--text); border-bottom-color: var(--mark); }
+  main { flex: 1; min-height: 0; overflow: auto; }
+  .all { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 28px 20px; padding: 20px; }
+  figure { margin: 0; }
+  .shot { position: relative; aspect-ratio: 1280 / 800; overflow: hidden; border: 1px solid var(--line); cursor: zoom-in; }
+  .shot iframe { position: absolute; inset: 0 auto auto 0; width: 1280px; height: 800px; border: 0; background: #fff;
+                 transform-origin: 0 0; pointer-events: none; }
+  .shot:hover { border-color: var(--dim); }
+  figcaption { display: grid; grid-template-columns: 1.6em 1fr; padding-top: 10px; }
+  figcaption b { font: 12px/1.6 var(--mono); color: var(--dim); font-weight: 400; }
+  figcaption strong { font-weight: 600; }
+  figcaption span { grid-column: 2; color: var(--dim); }
+  .one { height: 100%; }
+  .one iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+  #ideas > a { display: block; padding: 6px 20px; color: var(--text); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <!-- EDIT: what these are ideas for -->
+  <h1>Ideas for the page</h1>
+  <p>Reply with a letter, or mix them: "B, with A's colours".</p>
+</header>
+<nav id="tabs" aria-label="Ideas"></nav>
+<main id="ideas">
+  <!-- EDIT: one line per idea, 2 to 4 of them. href = the mockup file next to this board, data-name = a short name,
+       the text = one sentence on what the direction goes for. Change nothing else in this file. -->
+  <a href="a-first.html" data-name="First direction">One sentence on what this direction goes for and who it suits.</a>
+  <a href="b-second.html" data-name="Second direction">One sentence on what this direction goes for and who it suits.</a>
+  <a href="c-third.html" data-name="Third direction">One sentence on what this direction goes for and who it suits.</a>
+</main>
+<script>
+  // Turns the links above into the board: every idea live and scaled down side by side, or one at full size.
+  const main = document.getElementById("ideas");
+  const tabs = document.getElementById("tabs");
+  const ideas = Array.from(main.querySelectorAll("a[href]")).map((a, i) => ({
+    file: a.getAttribute("href"), name: a.dataset.name || a.getAttribute("href"), why: a.textContent.trim(),
+    letter: String.fromCharCode(65 + i),
+  }));
+  main.textContent = "";
+
+  const all = document.createElement("div");
+  all.className = "all";
+  const one = document.createElement("div");
+  one.className = "one";
+  const big = document.createElement("iframe");
+  one.append(big);
+  main.append(all, one);
+
+  // Each idea's page is fetched and drawn into a frame from its text (srcdoc), so the board needs nothing from the
+  // server beyond the files themselves and works inside the Preview panel as well as in a plain browser tab.
+  const pages = new Map();
+  function page(idea) {
+    if (!pages.has(idea.file)) {
+      pages.set(idea.file, fetch(idea.file, { cache: "no-store" }).then((r) => {
+        if (!r.ok) throw new Error(idea.file + " answered " + r.status);
+        return r.text();
+      }));
+    }
+    return pages.get(idea.file);
+  }
+  function draw(frame, idea) {
+    frame.setAttribute("title", idea.name);
+    page(idea).then((html) => { frame.srcdoc = html; }).catch((err) => {
+      frame.srcdoc = "<body style=\"font:14px sans-serif;padding:24px\">Could not load " + idea.file + "</body>";
+      console.error("ideas board:", err);
+    });
+  }
+
+  function fit(shot) {
+    shot.firstElementChild.style.transform = "scale(" + shot.clientWidth / 1280 + ")";
+  }
+  const sizes = new ResizeObserver((entries) => entries.forEach((e) => fit(e.target)));
+
+  let current = -1;
+  function show(index) {
+    const idea = ideas[index];
+    all.hidden = Boolean(idea);
+    one.hidden = !idea;
+    if (idea && big.dataset.file !== idea.file) {
+      big.dataset.file = idea.file;
+      draw(big, idea);
+    }
+    Array.from(tabs.children).forEach((b, i) => b.setAttribute("aria-pressed", String(i === index + 1)));
+    current = idea ? index : -1;
+  }
+
+  function tab(label, index) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.addEventListener("click", () => show(index));
+    tabs.append(b);
+  }
+  tab("ALL", -1);
+  ideas.forEach((idea, i) => {
+    tab(idea.letter + "  " + idea.name.toUpperCase(), i);
+    const figure = document.createElement("figure");
+    const shot = document.createElement("div");
+    shot.className = "shot";
+    const frame = document.createElement("iframe");
+    frame.setAttribute("tabindex", "-1");
+    draw(frame, idea);
+    shot.append(frame);
+    shot.addEventListener("click", () => show(i));
+    const caption = document.createElement("figcaption");
+    const letter = document.createElement("b");
+    letter.textContent = idea.letter;
+    const name = document.createElement("strong");
+    name.textContent = idea.name;
+    const why = document.createElement("span");
+    why.textContent = idea.why;
+    caption.append(letter, name, why);
+    figure.append(shot, caption);
+    all.append(figure);
+    sizes.observe(shot);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" || e.key === "0") show(-1);
+    else if (e.key === "ArrowRight") show(Math.min(current + 1, ideas.length - 1));
+    else if (e.key === "ArrowLeft") show(Math.max(current - 1, -1));
+    else if (/^[1-9]$/.test(e.key) && ideas[Number(e.key) - 1]) show(Number(e.key) - 1);
+  });
+  show(-1);
+</script>
+</body>
+</html>

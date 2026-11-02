@@ -1,0 +1,26 @@
+[Unit]
+Description=Open WebUI embedding model (llama.cpp, EmbeddingGemma 300M, CPU, local only)
+Documentation=file:///opt/owui-embed/README.md
+After=network.target
+
+[Service]
+DynamicUser=yes
+ExecStart=/opt/owui-embed/bin/llama-server \
+    -m /opt/owui-embed/models/embeddinggemma-300M-Q8_0.gguf \
+    --embedding --pooling mean \
+    --host 127.0.0.1 --port 8098 \
+    -t 20 -tb 20 -c 16384 -np 8 -b 2048 -ub 2048 \
+    --no-webui
+# Lower priority than Open WebUI so chats stay responsive while a big file embeds.
+Nice=10
+Restart=on-failure
+RestartSec=5
+MemoryMax=1G
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target

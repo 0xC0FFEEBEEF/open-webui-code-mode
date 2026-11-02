@@ -1,0 +1,34 @@
+#!/usr/sbin/nft -f
+# Code mode: opencode runs as the `coder` user and executes whatever the model decides.
+# Outbound: the internet, the slerm gateway and slerm-head's ssh (2026-10-20: the slerm-job key, which sshd lets
+# run only slerm-job-server as codebuild), never the rest of the home/lab LAN,
+# and never the desktops' browser DevTools (9222+) or VNC (5900+) ports, which belong to `agent`.
+# Inbound: the opencode server (4096), the feature manager (4100) and code-later's wake queue (4101) answer
+# cryoai (Open WebUI) and loopback only.
+table inet code_mode
+delete table inet code_mode
+table inet code_mode {
+  chain out {
+    type filter hook output priority 0; policy accept;
+    meta skuid != "coder" accept
+    ct state established,related accept
+    ip daddr 127.0.0.0/8 tcp dport { 5900-5999, 9222-9299 } counter reject
+    ip6 daddr ::1 tcp dport { 5900-5999, 9222-9299 } counter reject
+    ip daddr slerm-head tcp dport 8090 accept
+    ip daddr slerm-head tcp dport 22 accept
+    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } counter reject
+    ip6 daddr { fc00::/7, fe80::/10 } counter reject
+  }
+  chain in {
+    type filter hook input priority 0; policy accept;
+    tcp dport 4096 iif "lo" accept
+    tcp dport 4096 ip saddr cryoai accept
+    tcp dport 4096 counter drop
+    tcp dport 4100 iif "lo" accept
+    tcp dport 4100 ip saddr cryoai accept
+    tcp dport 4100 counter drop
+    tcp dport 4101 iif "lo" accept
+    tcp dport 4101 ip saddr cryoai accept
+    tcp dport 4101 counter drop
+  }
+}

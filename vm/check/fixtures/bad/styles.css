@@ -1,0 +1,4 @@
+:root { --gap: 8px; }
+.a { margin: var(--gapp); width: 10pxx }
+.b { color: red
+.c { color: blue; }

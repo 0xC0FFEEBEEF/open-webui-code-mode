@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Features</title>
+<style>
+  :root {
+    --bg: #0b0b0c; --raise: #131316; --line: #202024; --line2: #2a2a30;
+    --text: #e8e8ea; --dim: #8d8d96; --faint: #55555d;
+    --amber: #f5a524; --blue: #6ea8ff; --green: #3ecf8e; --red: #f26d6d;
+    --sans: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--sans);
+    -webkit-font-smoothing: antialiased; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+
+  header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 12px;
+    padding: 14px 20px; background: rgba(11, 11, 12, 0.92); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line); }
+  .brand { font: 600 10.5px/1 var(--mono); letter-spacing: 0.16em; color: var(--amber); }
+  .count { color: var(--dim); font-size: 12.5px; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .spacer { flex: 1; }
+  .who { color: var(--faint); font-size: 12px; white-space: nowrap; }
+  .link { background: none; border: 0; padding: 0; cursor: pointer; color: var(--dim); font-size: 12px; }
+  .link:hover { color: var(--text); }
+
+  main { max-width: 860px; margin: 0 auto; padding: 4px 20px 90px; }
+  body.panel main { max-width: none; }
+
+  .drift { border-bottom: 1px solid var(--line); padding: 10px 0; color: var(--amber); font-size: 12.5px; }
+  .drift .link { color: var(--amber); }
+  .drift ul { margin: 6px 0 2px; padding: 0; list-style: none; font: 11.5px/1.7 var(--mono); color: var(--dim); }
+
+  /* rows */
+  .row { border-bottom: 1px solid var(--line); padding: 14px 0 13px; animation: rise .2s ease both; }
+  .row.discarded { opacity: .55; }
+  .head { display: flex; align-items: center; gap: 10px; cursor: pointer; min-width: 0; }
+  .num { color: var(--faint); font: 500 12px/1 var(--mono); flex: none; width: 26px; }
+  .title { flex: 1; min-width: 0; font-size: 14.5px; font-weight: 550; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .title.none { color: var(--dim); font-style: italic; font-weight: 400; }
+  .head:hover .title { color: #fff; }
+  .sub { margin: 3px 0 0 36px; }
+  .summary { color: var(--dim); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .meta { color: var(--faint); font-size: 11.5px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .meta .st { color: var(--amber); }
+  .meta .st.green { color: var(--green); }
+  .note { font-size: 12px; margin-top: 6px; }
+  .note.amber { color: var(--amber); }
+  .note.red { color: var(--red); }
+  .step { color: var(--blue); font: 11.5px var(--mono); margin-top: 6px; display: flex; gap: 7px; align-items: center; }
+
+  /* the action button */
+  .act { flex: none; width: 116px; height: 30px; border-radius: 15px; border: 1px solid var(--line2);
+    background: transparent; color: var(--faint); font: 600 12.5px/1 var(--sans); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px; white-space: nowrap;
+    transition: border-color .15s, color .15s, background .15s; }
+  .act:disabled { cursor: default; }
+  .act.ready { border-color: var(--amber); color: #111; background: var(--amber); }
+  .act.ready:hover { background: #ffb73d; }
+  .act.outline { border-color: rgba(245,165,36,.55); color: var(--amber); }
+  .act.outline:hover { border-color: var(--amber); background: rgba(245,165,36,.08); }
+  .act.live { border-color: rgba(62,207,142,.45); color: var(--green); }
+  .act.live .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .act.live .hov { display: none; }
+  .act.live:hover, .act.live:focus-visible { border-color: var(--red); color: var(--red); background: rgba(242,109,109,.08); }
+  .act.live:hover .idle, .act.live:focus-visible .idle { display: none; }
+  .act.live:hover .hov, .act.live:focus-visible .hov { display: inline; }
+  .act.busy { color: var(--blue); border-color: rgba(110,168,255,.35); }
+  .act:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .spin { width: 11px; height: 11px; border: 1.5px solid rgba(110,168,255,.25); border-top-color: var(--blue);
+    border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+
+  /* confirm strip */
+  .confirm { margin: 10px 0 2px 36px; padding: 10px 0 2px; border-top: 1px dashed var(--line2);
+    animation: rise .15s ease both; }
+  .confirm p { margin: 0 0 9px; font-size: 13px; color: #d6d6da; }
+  .btn { border-radius: 14px; border: 1px solid var(--line2); background: transparent; color: var(--dim);
+    font: 600 12px/1 var(--sans); padding: 7px 15px; cursor: pointer; margin-right: 6px; }
+  .btn:hover { border-color: var(--dim); color: var(--text); }
+  .btn.amber { border-color: var(--amber); background: var(--amber); color: #111; }
+  .btn.red { border-color: var(--red); color: var(--red); }
+  .btn.red:hover { background: rgba(242,109,109,.1); }
+
+  /* details: a rail, not a box */
+  .details { margin: 12px 0 2px 36px; padding: 2px 0 2px 14px; border-left: 1px solid var(--line2);
+    animation: rise .18s ease both; }
+  .details h4 { margin: 14px 0 5px; color: var(--faint); font: 600 10px/1 var(--mono); letter-spacing: .14em; }
+  .details h4:first-child { margin-top: 4px; }
+  .full { color: #d6d6da; font-size: 13px; }
+  .full code, .mono { font: 12px var(--mono); color: #f3d9a4; }
+  .comp { margin: 6px 0; font-size: 12.5px; }
+  .comp .cn { color: var(--text); font-weight: 550; }
+  .comp .ok { color: var(--green); } .comp .bad { color: var(--red); } .comp .dimt { color: var(--faint); }
+  .commit { font: 11.5px/1.7 var(--mono); color: #c9c9cf; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .commit .sha { color: var(--faint); margin-right: 6px; }
+  pre.diff, pre.log { margin: 6px 0; padding: 8px 0; background: #070708; border: 1px solid var(--line);
+    border-radius: 6px; font: 11.5px/1.5 var(--mono); overflow: auto; max-height: 420px; }
+  pre.log { padding: 8px 12px; color: #b9b9c0; white-space: pre-wrap; word-break: break-word; }
+  pre.diff span { display: block; padding: 0 12px; color: #9a9aa2; white-space: pre; }
+  pre.diff .a { background: rgba(62,207,142,.09); color: #8ee6bb; }
+  pre.diff .d { background: rgba(242,109,109,.09); color: #f5a3a3; }
+  pre.diff .f { color: var(--text); font-weight: 600; padding-top: 6px; }
+  pre.diff .h { color: var(--blue); }
+  .hist { font: 11.5px/1.9 var(--mono); color: #c9c9cf; }
+  .hist .hl { display: flex; gap: 10px; align-items: baseline; }
+  .hist .t { color: var(--faint); width: 8.5em; flex: none; }
+  .hist .k { width: 5.5em; flex: none; }
+  .hist .ok { color: var(--green); } .hist .failed { color: var(--red); } .hist .running { color: var(--blue); }
+  .hist .err { color: var(--red); font-size: 11px; line-height: 1.4; margin: 0 0 4px 8.5em; white-space: normal; }
+  .actions { margin-top: 14px; }
+  .show-disc { margin-top: 14px; }
+  .empty { color: var(--faint); font-size: 13.5px; text-align: center; padding: 70px 20px; }
+
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 16px); max-width: min(560px, 92vw);
+    display: flex; gap: 14px; align-items: center; padding: 11px 16px; border-radius: 10px; background: var(--raise);
+    border: 1px solid var(--line2); box-shadow: 0 10px 34px rgba(0,0,0,.55); font-size: 13px; opacity: 0;
+    pointer-events: none; transition: opacity .2s, transform .2s; z-index: 20; }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+  #toast.ok { border-color: rgba(62,207,142,.5); } #toast.ok .msg { color: var(--green); }
+  #toast.err { border-color: rgba(242,109,109,.5); } #toast.err .msg { color: #f5a3a3; }
+  #toast .msg { flex: 1; }
+  #banner { position: fixed; left: 50%; bottom: 80px; transform: translateX(-50%); display: flex; gap: 12px;
+    align-items: center; padding: 10px 14px; border-radius: 10px; background: #1d1a14; color: var(--amber);
+    border: 1px solid rgba(245,165,36,.4); font-size: 13px; z-index: 20; box-shadow: 0 10px 34px rgba(0,0,0,.55); }
+
+  #signin { max-width: 340px; margin: 90px auto; }
+  #signin h2 { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+  #signin p { color: var(--dim); font-size: 12.5px; margin: 0 0 18px; }
+  #signin label { display: block; font-size: 12px; color: var(--dim); margin: 12px 0 5px; }
+  #signin input { width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--line2);
+    background: var(--raise); color: var(--text); font: 14px var(--sans); }
+  #signin input:focus { outline: none; border-color: var(--amber); }
+  #signin .btn { width: 100%; margin: 18px 0 0; padding: 10px; }
+  #signin .note { min-height: 18px; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes rise { from { opacity: 0; transform: translateY(3px); } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+  @media (max-width: 560px) { header { padding: 12px 14px; } main { padding: 4px 14px 90px; } .who { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">FEATURES</span>
+  <span class="count" id="count"></span>
+  <span class="spacer"></span>
+  <span class="who" id="who"></span>
+  <button class="link" id="signout" hidden>Sign out</button>
+</header>
+<main>
+  <div id="drift"></div>
+  <div id="list"></div>
+  <div id="signin" hidden>
+    <h2>Sign in</h2>
+    <p>Use your Open WebUI account. Only admins can deploy.</p>
+    <label for="semail">Email</label><input id="semail" autocomplete="username">
+    <label for="spass">Password</label><input id="spass" type="password" autocomplete="current-password">
+    <button class="btn amber" id="signinbtn">Sign in</button>
+    <div class="note red" id="signinerr"></div>
+  </div>
+</main>
+<div id="toast"><span class="msg"></span><button class="link" id="toastlog" hidden>View log</button><button class="link" id="toastx">✕</button></div>
+<div id="banner" hidden>The page script changed. <button class="btn amber" id="reloadbtn">Reload Open WebUI</button></div>
+
+<script>
+(function () {
+  "use strict";
+  var ALLOWED_ORIGINS = /*ALLOWED_ORIGINS*/;
+  var PANEL = window.parent !== window;
+  var token = null, parentOrigin = null;
+  var data = { features: [], ops: [], drift: [], user: null };
+  // UI state lives here, not in the DOM, so a poll can re-render without losing it.
+  var ui = { open: null, confirm: null, errors: {}, diff: {}, logs: {}, showDiscarded: false, driftOpen: false,
+             running: {}, needSignin: false };
+  var lastList = "", lastStatus = {}, toastFor = null;
+  var $ = function (id) { return document.getElementById(id); };
+  if (PANEL) document.body.classList.add("panel");
+
+  // ------------------------------------------------------------- helpers
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function md(s) {  // inline markdown; links only to http(s)
+    return esc(s)
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+      .replace(/\n/g, "<br>");
+  }
+  function dur(sec) {
+    sec = Math.max(0, Math.round(sec || 0));
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return m ? m + "m " + (s < 10 ? "0" : "") + s + "s" : s + "s";
+  }
+  function ago(ts) {
+    if (!ts) return "";
+    var d = Math.max(0, Math.round(Date.now() / 1000 - ts));
+    if (d < 45) return "just now";
+    var m = Math.round(d / 60); if (m < 60) return m + " min ago";
+    var h = Math.round(m / 60); if (h < 24) return h + " h ago";
+    return Math.round(h / 24) + " d ago";
+  }
+  function clock(ts) {
+    if (!ts) return "";
+    var d = new Date(ts * 1000), now = new Date();
+    var t = d.toTimeString().slice(0, 5);
+    return d.toDateString() === now.toDateString() ? t : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + t;
+  }
+  function firstLine(s) { return String(s || "").split("\n")[0]; }
+  function uniq(a) { return a.filter(function (x, i) { return x && a.indexOf(x) === i; }); }
+  var REMOTE_NAMES = { "owui/code-toggle.js": "page script", "owui/code_mode.py": "Code pipe",
+                       "owui/desktop_code_tool.py": "chat tool" };
+
+  function post(msg) { if (PANEL && parentOrigin) window.parent.postMessage(msg, parentOrigin); }
+
+  function call(method, path, body) {
+    var h = {};
+    if (token) h.Authorization = "Bearer " + token;
+    else if (method === "POST") h["X-Code-Deploy"] = "1";  // cookie session: a cross-site form can't set this
+    if (body !== undefined) h["Content-Type"] = "application/json";
+    return fetch(path, { method: method, headers: h, cache: "no-store", credentials: "same-origin",
+                         body: body === undefined ? undefined : JSON.stringify(body) })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j }; });
+      });
+  }
+
+  // ------------------------------------------------------------- data
+  function featureOf(n) { return data.features.filter(function (f) { return f.n === n; })[0] || null; }
+  function opsOf(n) { return data.ops.filter(function (o) { return o.feature === n; }); }
+  function opRunning(o) { return o && (o.status === "running" || (o.local && o.local.status === "running")); }
+
+  function load() {
+    if (PANEL && !token) return Promise.resolve();
+    return call("GET", "/api/state").then(function (r) {
+      if (r.status === 401 || r.status === 403) { showSignin(r.status === 403 ? "That account is not an admin." : ""); return; }
+      if (r.status !== 200) return;
+      $("signin").hidden = true;
+      data.features = r.body.features || [];
+      data.ops = r.body.ops || [];
+      data.drift = r.body.drift || [];
+      data.user = r.body.user || null;
+      data.ops.forEach(function (o) {  // pick up ops started elsewhere (another tab, the CLI)
+        if (opRunning(o) && o.feature != null && !ui.running[o.feature]) {
+          ui.running[o.feature] = { id: o.id, kind: o.kind, step: "Working…" };
+          follow(o.feature);
+        }
+      });
+      notifyChanges();
+      render();
+    }).catch(function () {});
+  }
+
+  function notifyChanges() {
+    var changed = false;
+    data.features.forEach(function (f) {
+      var key = f.status + (f.update_available ? "+" : "");
+      if (lastStatus[f.n] !== undefined && lastStatus[f.n] !== key) changed = true;
+      lastStatus[f.n] = key;
+    });
+    if (changed) post({ type: "features:changed" });
+  }
+
+  // ------------------------------------------------------------- render
+  function render() {
+    var live = 0, ready = 0, prog = 0, back = 0;
+    data.features.forEach(function (f) {
+      if (f.status === "discarded") return;
+      if (f.status === "deployed") live++;
+      if (f.status === "rolled_back") back++;
+      if (f.status === "ready" || f.update_available) ready++;
+      else if (f.status === "draft") prog++;
+    });
+    var parts = [];
+    if (live) parts.push(live + " live");
+    if (ready) parts.push(ready + " ready");
+    if (prog) parts.push(prog + " in progress");
+    if (back) parts.push(back + " rolled back");
+    $("count").textContent = parts.join(" · ");
+    var u = data.user || {};
+    $("who").textContent = !PANEL && (u.name || u.email) ? (u.name || u.email) : "";
+    $("signout").hidden = PANEL || !(u.name || u.email);
+
+    var drift = "";
+    if (data.drift.length) {
+      drift = '<div class="drift">⚠ ' + data.drift.length + " installed file" + (data.drift.length === 1 ? " differs" : "s differ")
+        + ' from what was deployed. <button class="link" data-a="drift">' + (ui.driftOpen ? "Hide" : "Show") + "</button>"
+        + (ui.driftOpen ? "<ul>" + data.drift.map(function (d) {
+            return "<li>" + esc(d.to) + " <span style='color:var(--faint)'>(" + esc(String(d.expected || "none").slice(0, 8))
+              + " → " + esc(String(d.actual || "missing").slice(0, 8)) + ")</span></li>";
+          }).join("") + "</ul>" : "") + "</div>";
+    }
+    $("drift").innerHTML = drift;
+
+    var all = data.features.slice().sort(function (a, b) { return b.n - a.n; });
+    var shown = all.filter(function (f) { return f.status !== "discarded" || ui.showDiscarded; });
+    var discarded = all.length - all.filter(function (f) { return f.status !== "discarded"; }).length;
+    var html = shown.map(rowHtml).join("");
+    if (!all.length) html = '<div class="empty">No features yet. Press <b style="color:var(--amber)">✦ Feature</b> in Open WebUI to start one.</div>';
+    if (discarded) html += '<div class="show-disc"><button class="link" data-a="disc">' + (ui.showDiscarded ? "Hide" : "Show")
+      + " discarded (" + discarded + ")</button></div>";
+    if (html !== lastList) {  // unchanged HTML: leave the DOM (and scroll positions, hover) alone
+      $("list").innerHTML = html;
+      lastList = html;
+    }
+  }
+
+  function action(f) {
+    var run = ui.running[f.n];
+    if (run) {
+      var w = { deploy: "Deploying…", rollback: "Rolling back…", discard: "Discarding…", sync: "Syncing…" }[run.kind] || "Working…";
+      return '<button class="act busy" disabled><span class="spin"></span>' + w + "</button>";
+    }
+    if (f.status === "discarded") return "";
+    if (f.status === "deployed" && f.update_available)
+      return '<button class="act ready" data-a="ask" data-k="deploy" data-n="' + f.n + '">Deploy update</button>';
+    if (f.status === "deployed")
+      return '<button class="act live" data-a="ask" data-k="rollback" data-n="' + f.n + '" title="Roll back #' + f.n
+        + '"><span class="idle"><span class="dot"></span></span><span class="idle">Deployed</span><span class="hov">Roll back</span></button>';
+    if (!started(f)) return '<button class="act" disabled>In progress</button>';
+    if (f.blocked) return '<button class="act" disabled title="' + esc(f.blocked) + '">Deploy</button>';
+    if (f.can_deploy && f.status === "ready")
+      return '<button class="act ready" data-a="ask" data-k="deploy" data-n="' + f.n + '">Deploy</button>';
+    if (f.can_deploy)
+      return '<button class="act outline" data-a="ask" data-k="deploy" data-n="' + f.n + '"'
+        + (f.status === "draft" ? ' title="Ornith hasn\'t marked this ready"' : "") + ">Deploy</button>";
+    return '<button class="act" disabled>In progress</button>';
+  }
+
+  function started(f) {  // anything on the branch yet (or live, or rolled back)?
+    return f.status !== "draft" || (f.components || []).some(function (c) {
+      return (c.commits || []).length || (c.dirty || []).length || (c.applied || []).length;
+    });
+  }
+  function titleOf(f) { return f.title || f.chat_title || ""; }
+
+  function labels(f) {
+    var remote = (f.remote_touched || []).map(function (p) { return REMOTE_NAMES[p] || p; });
+    return uniq((f.components || []).map(function (c) {
+      if (c.name === "code-mode") return remote.length ? "Open WebUI (" + remote.join(", ") + ")" : "agent notes";
+      return c.label || c.name;
+    }));
+  }
+
+  function rowHtml(f) {
+    var n = f.n, commits = 0;
+    (f.components || []).forEach(function (c) { commits += (c.commits || []).length; });
+    var meta = labels(f);
+    if (commits) meta.push(commits + " commit" + (commits === 1 ? "" : "s"));
+    meta.push(ago(f.updated || f.created));
+    var st = "";
+    if (f.status === "rolled_back") st = '<span class="st">Rolled back' + (f.rolled_back_at ? " " + ago(f.rolled_back_at) : "") + "</span>";
+    else if (f.status === "deployed" && f.update_available) st = '<span class="st">Update waiting</span>';
+    else if (f.status === "deployed") st = '<span class="st green">Live' + (f.deployed_at ? " since " + ago(f.deployed_at) : "") + "</span>";
+    else if (f.status === "discarded") st = "<span>Discarded</span>";
+    var run = ui.running[n];
+    var h = '<div class="row ' + esc(f.status) + '" id="f' + n + '">'
+      + '<div class="head" data-a="open" data-n="' + n + '"><span class="num">#' + n + "</span>"
+      + '<span class="title' + (titleOf(f) ? "" : " none") + '">' + esc(titleOf(f) || "Untitled feature") + "</span>"
+      + action(f) + "</div>"
+      + '<div class="sub">'
+      + (f.summary ? '<div class="summary">' + esc(firstLine(f.summary)) + "</div>" : "")
+      + '<div class="meta">' + meta.map(esc).join(" · ") + (st ? " · " + st : "") + "</div>"
+      + (run && run.step ? '<div class="step"><span class="spin"></span>' + esc(run.step) + "</div>" : "")
+      + (f.blocked && !run && started(f) ? '<div class="note amber">' + esc(f.blocked) + "</div>" : "")
+      + (ui.errors[n] ? '<div class="note red">' + esc(ui.errors[n]) + "</div>" : "")
+      + "</div>";
+    if (ui.confirm && ui.confirm.n === n) h += confirmHtml(f, ui.confirm.kind);
+    if (ui.open === n) h += detailsHtml(f);
+    return h + "</div>";
+  }
+
+  function confirmHtml(f, kind) {
+    var text, btn;
+    if (kind === "rollback") {
+      text = "Roll back #" + f.n + "? Its commits are reverted and the previous versions reinstalled.";
+      btn = '<button class="btn red" data-a="go" data-k="rollback" data-n="' + f.n + '">Roll back</button>';
+    } else if (kind === "discard") {
+      text = "Discard #" + f.n + "? Its workspace is removed; the branch stays in git.";
+      btn = '<button class="btn red" data-a="go" data-k="discard" data-n="' + f.n + '">Discard</button>';
+    } else {
+      var what = labels(f);
+      text = "Deploy #" + f.n + " “" + (titleOf(f) || "Untitled feature") + "”? "
+        + (what.length ? "Updates " + what.join(" and ") + " and runs their tests." : "Runs the tests and installs it.");
+      btn = '<button class="btn amber" data-a="go" data-k="deploy" data-n="' + f.n + '">Deploy</button>';
+    }
+    return '<div class="confirm"><p>' + esc(text) + "</p>" + btn + '<button class="btn" data-a="cancel">Cancel</button></div>';
+  }
+
+  function detailsHtml(f) {
+    var h = '<div class="details">';
+    if (f.summary) h += '<h4>WHAT IT DOES</h4><div class="full">' + md(f.summary) + "</div>";
+    h += "<h4>WHERE</h4>";
+    (f.components || []).forEach(function (c) {
+      var t = c.tests ? (c.tests.ok ? '<span class="ok">✓ tests ' + esc(c.tests.summary || "passed") + "</span>"
+                                    : '<span class="bad">✗ tests ' + esc(c.tests.summary || "failed") + "</span>")
+                      : '<span class="dimt">no test run recorded</span>';
+      h += '<div class="comp"><span class="cn">' + esc(c.label || c.name) + "</span> · " + t;
+      if ((c.dirty || []).length) h += ' · <span class="bad">uncommitted: ' + esc(c.dirty.join(", ")) + "</span>";
+      h += "</div>";
+      (c.commits || []).slice(0, 12).forEach(function (cm) {
+        h += '<div class="commit"><span class="sha">' + esc(cm.short || String(cm.sha).slice(0, 7)) + "</span>" + esc(cm.subject) + "</div>";
+      });
+      (c.applied || []).forEach(function (cm) {
+        h += '<div class="commit"><span class="sha">' + esc(cm.short || String(cm.sha).slice(0, 7)) + "</span>" + esc(cm.subject)
+          + ' <span style="color:var(--green)">live</span></div>';
+      });
+    });
+    if (!(f.components || []).length) h += '<div class="comp"><span class="dimt">' + (f.status === "rolled_back"
+      ? "Nothing live. Deploy puts it back exactly as it was." : f.status === "discarded" ? "Discarded."
+      : "Nothing on the branch yet.") + "</span></div>";
+    h += '<div style="margin-top:6px"><button class="link" data-a="chat" data-n="' + f.n + '">Open the chat →</button></div>';
+
+    var what = f.status === "deployed" && !f.update_available ? "deployed" : "pending";
+    var d = ui.diff[f.n];
+    h += "<h4>CHANGES</h4>";
+    if (!d || !d.open) h += '<button class="link" data-a="diff" data-n="' + f.n + '">Show the ' + (what === "deployed" ? "deployed" : "pending") + " diff</button>";
+    else h += '<button class="link" data-a="diff" data-n="' + f.n + '">Hide the diff</button>' + (d.html || '<pre class="log">Loading…</pre>');
+
+    var ops = opsOf(f.n);
+    h += "<h4>HISTORY</h4>";
+    if (!ops.length) h += '<div class="hist" style="color:var(--faint)">Nothing deployed or rolled back yet.</div>';
+    else h += '<div class="hist">' + ops.map(function (o) {
+      var status = opRunning(o) ? "running" : (o.local && o.local.status === "failed") ? "failed" : o.status;
+      var ended = (o.local && o.local.ended) || o.ended;
+      var line = '<div class="hl"><span class="t">' + esc(clock(o.started)) + '</span><span class="k">' + esc(o.kind)
+        + '</span><span class="' + esc(status) + '">' + esc(status) + "</span>"
+        + '<span style="color:var(--faint)">' + (ended ? dur(ended - o.started) : "") + "</span>"
+        + '<span class="spacer"></span><button class="link" data-a="log" data-op="' + esc(o.id) + '">'
+        + (ui.logs[o.id] ? "hide log" : "log") + "</button></div>";
+      var err = (o.local && o.local.error) || o.error;
+      if (err) line += '<div class="err">' + esc(err) + "</div>";
+      if (ui.logs[o.id]) line += '<pre class="log">' + esc(ui.logs[o.id]) + "</pre>";
+      return line;
+    }).join("") + "</div>";
+
+    var acts = "";
+    if (f.status === "deployed") acts += '<button class="btn red" data-a="ask" data-k="rollback" data-n="' + f.n + '">Roll back</button>';
+    if (f.can_discard) acts += '<button class="btn" data-a="ask" data-k="discard" data-n="' + f.n + '">Discard</button>';
+    if (acts) h += '<div class="actions">' + acts + "</div>";
+    return h + "</div>";
+  }
+
+  function diffHtml(files) {
+    if (!files.length) return '<pre class="log">No changes.</pre>';
+    var out = [];
+    files.forEach(function (x) {
+      out.push('<span class="f">' + esc((x.component ? x.component + "/" : "") + x.file) + "  +" + (x.additions || 0) + " −" + (x.deletions || 0) + "</span>");
+      String(x.patch || "").split("\n").forEach(function (l) {
+        if (/^(diff --git|index |--- |\+\+\+ )/.test(l)) return;
+        var c = l.charAt(0) === "+" ? "a" : l.charAt(0) === "-" ? "d" : l.slice(0, 2) === "@@" ? "h" : "";
+        out.push('<span class="' + c + '">' + esc(l || " ") + "</span>");
+      });
+    });
+    return '<pre class="diff">' + out.join("") + "</pre>";
+  }
+
+  // ------------------------------------------------------------- actions
+  function start(n, kind) {
+    ui.confirm = null;
+    delete ui.errors[n];
+    ui.running[n] = { kind: kind, step: "Starting…" };
+    render();
+    call("POST", "/api/features/" + n + "/" + kind).then(function (r) {
+      if (r.status === 202 || r.status === 200) {
+        ui.running[n] = { id: r.body.op, kind: kind, step: "Starting…", t0: Date.now() };
+        follow(n);
+      } else {
+        delete ui.running[n];
+        ui.errors[n] = r.body.error === "busy" ? "Another operation is running; try again when it finishes."
+          : (r.body.error || "Failed (" + r.status + ")");
+        render();
+      }
+    }).catch(function () { delete ui.running[n]; ui.errors[n] = "Could not reach the deploy service."; render(); });
+  }
+
+  function follow(n) {  // the op's live step, then a toast when it (and the Open WebUI part) is done
+    var run = ui.running[n];
+    if (!run || !run.id) return;
+    call("GET", "/api/ops/" + encodeURIComponent(run.id)).then(function (r) {
+      var op = r.body.op || {}, local = r.body.local;
+      var steps = op.steps || [], cur = null;
+      for (var i = 0; i < steps.length; i++) if (steps[i].status === "running") cur = steps[i].name;
+      if (!cur && op.status !== "running" && local && local.status === "running") cur = "Installing in Open WebUI";
+      run.step = cur || (steps.length ? steps[steps.length - 1].name : "Working…");
+      var done = r.status === 200 && op.status && op.status !== "running" && (!local || local.status !== "running");
+      if (!done) { render(); setTimeout(function () { follow(n); }, 1000); return; }
+      delete ui.running[n];
+      var failed = op.status === "failed" || (local && local.status === "failed");
+      var word = { deploy: "Deployed", rollback: "Rolled back", discard: "Discarded" }[run.kind] || "Done";
+      var secs = ((local && local.ended) || op.ended || 0) - (op.started || 0);
+      if (failed) toast(((local && local.error) || op.error || "The operation failed."), "err", n, run.id);
+      else toast(word + " #" + n + (secs > 0 ? " in " + dur(secs) : ""), "ok", n, run.id);
+      if (local && local.reload_page && !failed) $("banner").hidden = false;
+      post({ type: "features:changed" });
+      load();
+    }).catch(function () { setTimeout(function () { follow(n); }, 2000); });
+  }
+
+  var toastTimer = null;
+  function toast(msg, cls, n, opId) {
+    var t = $("toast");
+    t.className = cls + " show";
+    t.querySelector(".msg").textContent = msg;
+    toastFor = { n: n, op: opId };
+    $("toastlog").hidden = !opId;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = cls; }, cls === "err" ? 15000 : 6000);
+  }
+
+  function showLog(opId) {
+    call("GET", "/api/ops/" + encodeURIComponent(opId)).then(function (r) {
+      var txt = "";
+      if (r.body.log) txt += r.body.log.trim() + "\n";
+      if (r.body.local_log) txt += "\n── Open WebUI side ──\n" + r.body.local_log.trim() + "\n";
+      ui.logs[opId] = txt || "(no log)";
+      render();
+    });
+  }
+
+  function focusFeature(n) {
+    if (!featureOf(n) && data.features.length) return;
+    ui.open = n;
+    render();
+    var el = $("f" + n);
+    if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-a]");
+    if (!b) return;
+    var a = b.getAttribute("data-a"), n = +b.getAttribute("data-n");
+    if (a === "open") {
+      if (e.target.closest(".act")) return;
+      ui.open = ui.open === n ? null : n;
+    } else if (a === "ask") {
+      e.stopPropagation();
+      var k = b.getAttribute("data-k");
+      ui.confirm = ui.confirm && ui.confirm.n === n && ui.confirm.kind === k ? null : { n: n, kind: k };
+    } else if (a === "go") {
+      start(n, b.getAttribute("data-k"));
+      return;
+    } else if (a === "cancel") {
+      ui.confirm = null;
+    } else if (a === "diff") {
+      var d = ui.diff[n] || (ui.diff[n] = {});
+      d.open = !d.open;
+      if (d.open) {
+        var f = featureOf(n);
+        var what = f && f.status === "deployed" && !f.update_available ? "deployed" : "pending";
+        d.html = "";
+        call("GET", "/api/features/" + n + "/diff?what=" + what).then(function (r) {
+          d.html = r.status === 200 ? diffHtml(r.body.files || []) : '<pre class="log">Could not load the diff.</pre>';
+          render();
+        });
+      }
+    } else if (a === "log") {
+      var id = b.getAttribute("data-op");
+      if (ui.logs[id]) delete ui.logs[id]; else { ui.logs[id] = "Loading…"; showLog(id); }
+    } else if (a === "chat") {
+      var fc = featureOf(n);
+      if (!fc) return;
+      if (PANEL) post({ type: "features:open-chat", chat_id: fc.chat_id });
+      else if (ALLOWED_ORIGINS[0]) window.open(ALLOWED_ORIGINS[0] + "/c/" + encodeURIComponent(fc.chat_id), "_blank", "noopener");
+      return;
+    } else if (a === "disc") {
+      ui.showDiscarded = !ui.showDiscarded;
+    } else if (a === "drift") {
+      ui.driftOpen = !ui.driftOpen;
+    }
+    render();
+  });
+
+  $("toastx").addEventListener("click", function () { $("toast").classList.remove("show"); });
+  $("toastlog").addEventListener("click", function () {
+    if (!toastFor) return;
+    ui.open = toastFor.n;
+    if (toastFor.op && !ui.logs[toastFor.op]) { ui.logs[toastFor.op] = "Loading…"; showLog(toastFor.op); }
+    focusFeature(toastFor.n);
+  });
+  $("reloadbtn").addEventListener("click", function () {
+    if (PANEL) post({ type: "features:reload-page" });
+    else if (ALLOWED_ORIGINS[0]) window.open(ALLOWED_ORIGINS[0], "_blank", "noopener");
+  });
+
+  // ------------------------------------------------------------- sign in (standalone)
+  function showSignin(msg) {
+    if (PANEL) return;  // the panel gets its token from Open WebUI
+    var first = !ui.needSignin;
+    ui.needSignin = true;  // stop polling until signed in, so a poll can't wipe the form's message
+    $("list").innerHTML = ""; lastList = ""; $("drift").innerHTML = ""; $("count").textContent = "";
+    $("signin").hidden = false;
+    if (msg || first) $("signinerr").textContent = msg || "";
+    if (first) setTimeout(function () { $("semail").focus(); }, 50);
+    $("signout").hidden = true;
+    $("who").textContent = "";
+  }
+  function signin() {
+    $("signinerr").textContent = "";
+    call("POST", "/auth/signin", { email: $("semail").value, password: $("spass").value }).then(function (r) {
+      if (r.status === 200) { $("spass").value = ""; ui.needSignin = false; load(); }
+      else $("signinerr").textContent = r.body.error || "Sign-in failed.";
+    }).catch(function () { $("signinerr").textContent = "Could not reach the deploy service."; });
+  }
+  $("signinbtn").addEventListener("click", signin);
+  $("spass").addEventListener("keydown", function (e) { if (e.key === "Enter") signin(); });
+  $("signout").addEventListener("click", function () {
+    call("POST", "/auth/signout").then(function () { data = { features: [], ops: [], drift: [], user: null }; showSignin(""); });
+  });
+
+  // ------------------------------------------------------------- start
+  if (PANEL) {
+    window.addEventListener("message", function (e) {
+      if (e.source !== window.parent || ALLOWED_ORIGINS.indexOf(e.origin) === -1 || !e.data) return;
+      if (e.data.type === "features:token") {
+        parentOrigin = e.origin;
+        var first = !token;
+        token = e.data.token || null;
+        if (first) load();
+      } else if (e.data.type === "features:focus") {
+        parentOrigin = parentOrigin || e.origin;
+        var n = +e.data.n;
+        if (data.features.length) focusFeature(n); else ui.open = n;
+      }
+    });
+    window.parent.postMessage({ type: "features:hello" }, "*");  // no secret in it; the reply is origin-checked
+  } else {
+    var m = /^#f(\d+)/.exec(location.hash);
+    if (m) ui.open = +m[1];
+    load();
+  }
+  (function tick() {
+    var busy = Object.keys(ui.running).length;
+    if (!document.hidden && !ui.needSignin) load();
+    setTimeout(tick, busy ? 3000 : 5000);
+  })();
+  setInterval(function () { if (!document.hidden) { lastList = ""; render(); } }, 60000);  // keep "x min ago" fresh
+})();
+</script>
+</body>
+</html>

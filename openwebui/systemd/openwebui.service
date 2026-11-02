@@ -1,0 +1,17 @@
+[Unit]
+Description=Open WebUI Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=owui
+WorkingDirectory=/home/owui
+Environment="HOME=/home/owui"
+Environment="DATA_DIR=/home/owui/.open-webui"
+ExecStart=/home/owui/.venvs/openwebui/bin/open-webui serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

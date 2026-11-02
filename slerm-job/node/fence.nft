@@ -1,0 +1,20 @@
+#!/usr/sbin/nft -f
+# Code mode build jobs run as uid 1102 (codebuild) and execute whatever a model wrote.
+# Same fence as user coder on VM 129: the internet yes, the home/lab LAN no (DNS to Technitium only),
+# and none of the node's own services on loopback (ssh, slurmd, llama router/tasks/rpc).
+# Loaded by codebuild-fence.service; the job script refuses to run if slerm-head:22 is reachable.
+table inet codebuild_fence
+delete table inet codebuild_fence
+table inet codebuild_fence {
+  chain out {
+    type filter hook output priority 0; policy accept;
+    meta skuid != 1102 accept
+    ct state established,related accept
+    ip daddr 127.0.0.0/8 tcp dport { 22, 111, 2049, 6817-6819, 8080-8099, 50000-50100 } counter reject
+    ip6 daddr ::1 tcp dport { 22, 111, 2049, 6817-6819, 8080-8099, 50000-50100 } counter reject
+    ip daddr 192.0.2.53 udp dport 53 accept
+    ip daddr 192.0.2.53 tcp dport 53 accept
+    ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } counter reject
+    ip6 daddr { fc00::/7, fe80::/10 } counter reject
+  }
+}

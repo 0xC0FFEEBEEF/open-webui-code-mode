@@ -1,0 +1,22 @@
+[Unit]
+Description=code-fixer.py — the bug fixer for Code mode
+Documentation=file:///home/coder/projects/code-fixer/BRIEF.md
+After=network.target opencode-code.service
+
+[Service]
+Type=simple
+User=coder
+Group=coder
+EnvironmentFile=/etc/code-mode/fixer.env
+ExecStart=/usr/bin/python3 /home/coder/.local/lib/code-mode/code-fixer.py
+Restart=on-failure
+RestartSec=2
+# Intentionally no NoNewPrivileges: the service needs two sudo commands
+# (code-mode-logs and systemctl restart code-preview).
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""report-bug "TITLE" "DETAILS" -- file a bug report with the fixer.
+
+Run from inside a chat project (so the chat id can be derived), otherwise the
+report is filed against CODE_DESKTOP. Posts to the local fixer service, prints a
+signed viewer link, waits for the verdict, and prints the result.
+
+The agent drives report-bug through opencode's shell tool, which kills a
+command at its timeout -- a fix can take longer than that -- so the wait is
+capped at REPORT_WAIT seconds (default 540). If the incident is not done by
+then the agent is told how to keep waiting with `report-bug --wait <id>`, and
+that form re-checks a prior report instead of filing a new one.
+
+The fixer API token is normally in the environment (FIXER_TOKEN); when it is
+not, it is read from the fixer env file (default
+/etc/code-mode/fixer.env, overridable with FIXER_ENV_FILE). Only FIXER_TOKEN is
+read from that file, and it is never printed.
+
+Prints are for the agent, not a human: Fixer link, Verdict, Summary, Root
+cause, Changed, Services restarted, and what to do next.
+
+Exit codes:
+  0 = fixed / not_a_bug
+  1 = needs_human / couldn't_fix / error
+  2 = could not determine the chat id
+  3 = still running after REPORT_WAIT (keep waiting with `report-bug --wait`)
+"""
+
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+
+CHAT_DIR_RE = re.compile(r"^([^/]+)")
+DEFAULT_PORT = 4098
+DEFAULT_ENV_FILE = "/etc/code-mode/fixer.env"
+PROJECTS_ROOT = os.environ.get("PROJECTS_ROOT", "/home/coder/projects")
+REPORT_WAIT = float(os.environ.get("REPORT_WAIT", "540"))
+
+
+def chat_id_from_cwd():
+    # An explicit override wins over cwd detection.
+    override = (os.environ.get("CODE_CHAT") or "").strip()
+    if override:
+        return override
+    cwd = os.path.realpath(os.getcwd())
+    base = os.path.realpath(PROJECTS_ROOT)
+    chats = os.path.join(base, "chats")
+    if cwd == chats or cwd.startswith(chats + os.sep):
+        rel = cwd[len(chats):].lstrip(os.sep)
+        m = CHAT_DIR_RE.match(rel)
+        if m:
+            return m.group(1)
+    # feature chats live under projects/features/<chat id>/...; same rule: the
+    # first path component is the chat id.
+    features = os.path.join(base, "features")
+    if cwd == features or cwd.startswith(features + os.sep):
+        rel = cwd[len(features):].lstrip(os.sep)
+        m = CHAT_DIR_RE.match(rel)
+        if m:
+            return m.group(1)
+    if cwd.startswith(base + os.sep):
+        return "CODE_DESKTOP"
+    return None
+
+
+def load_token():
+    """The API token: FIXER_TOKEN from the environment, else from the fixer
+    env file. Only FIXER_TOKEN is read from the file; it is never printed."""
+    token = (os.environ.get("FIXER_TOKEN") or "").strip()
+    if token:
+        return token
+    path = os.environ.get("FIXER_ENV_FILE", DEFAULT_ENV_FILE)
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                if key.strip() != "FIXER_TOKEN":
+                    continue
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] \
+                        and value[0] in ("'", '"'):
+                    value = value[1:-1]
+                return value
+    except OSError:
+        pass
+    return ""
+
+
+def fetch(url, method="GET", body=None, bearer=None, timeout=None):
+    headers = {}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    if bearer:
+        headers["Authorization"] = "Bearer " + bearer
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+    return json.loads(raw.decode()) if raw else {}
+
+
+def fmt_duration(record):
+    """A human-readable elapsed time from the record's started/done seconds."""
+    started = record.get("started") or record.get("created")
+    done = record.get("done")
+    if not started or not done:
+        return "?"
+    sec = done - started
+    if sec < 60:
+        return "%ds" % sec
+    m = int(sec // 60)
+    s = int(sec % 60)
+    if m < 60:
+        return "%dm%02ds" % (m, s)
+    h = m // 60
+    return "%dh%02dm" % (h, m % 60)
+
+
+def main(argv):
+    # `report-bug --wait <id>` re-checks a prior report instead of filing one.
+    wait_id = None
+    if "--wait" in argv:
+        idx = argv.index("--wait")
+        if idx + 1 >= len(argv):
+            sys.stderr.write("usage: report-bug --wait <id>\n")
+            return 2
+        wait_id = argv[idx + 1]
+        argv = argv[:idx] + argv[idx + 2:]
+
+    if wait_id is None:
+        if len(argv) < 3:
+            sys.stderr.write("usage: report-bug \"TITLE\" \"DETAILS\"\n"
+                             "       report-bug --wait <id>\n")
+            return 2
+        title, details = argv[1], argv[2]
+        if not title.strip() or not details.strip():
+            sys.stderr.write("report-bug: title and details must not be empty\n")
+            return 2
+        chat_id = chat_id_from_cwd()
+        if chat_id is None:
+            sys.stderr.write("report-bug: not inside a chat project; "
+                             "cannot find chat id\n")
+            return 2
+
+    token = load_token()
+    port = int(os.environ.get("FIXER_PORT", DEFAULT_PORT))
+    api_base = os.environ.get("FIXER_API_BASE", "http://127.0.0.1:%d" % port)
+    # The agent may hand this link to the user, who typically can't open a
+    # 127.0.0.1 address -- default the public base to the box's public IP.
+    public_base = os.environ.get("FIXER_PUBLIC_BASE", "http://ai-sandbox:4098")
+
+    if wait_id is None:
+        reporter = os.environ.get("REPORTER_MODEL", "coding agent")
+        payload = {
+            "chat_id": chat_id,
+            "source": "code",
+            "reporter_model": reporter,
+            "title": title,
+            "details": details,
+        }
+        try:
+            resp = fetch(api_base + "/api/report", method="POST", body=payload,
+                         bearer=token)
+        except urllib.error.HTTPError as exc:
+            sys.stderr.write("report-bug: could not post report (HTTP %d)\n"
+                             % exc.code)
+            return 1
+        except Exception as exc:
+            sys.stderr.write("report-bug: could not reach the fixer: %s\n" % exc)
+            return 1
+        iid = resp.get("id")
+        public_url = public_base + resp.get("view", "/f/%s/%s/" % (iid, ""))
+        print("Fixer: %s" % public_url)
+        print("Waiting for the fixer…")
+    else:
+        iid = wait_id
+        print("Waiting for the fixer…")
+
+    # Wait for completion, capped at REPORT_WAIT seconds. Connection errors and
+    # timeouts are retried; a 401/403/404 is fatal. The /wait endpoint blocks
+    # server-side so we get the verdict as soon as it is ready.
+    deadline = time.time() + REPORT_WAIT
+    record = None
+    while time.time() < deadline:
+        left = deadline - time.time()
+        # the server holds the request up to ?timeout= seconds; give up a little after it
+        wait_url = api_base + "/api/incidents/%s/wait?timeout=%d" % (iid, max(1, min(290, left - 2)))
+        try:
+            record = fetch(wait_url, bearer=token, timeout=max(2, min(300, left)))
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403, 404):
+                sys.stderr.write("report-bug: %s\n" % exc)
+                return 1
+            # other HTTP errors (e.g. 500): keep retrying until REPORT_WAIT
+        except (urllib.error.URLError, TimeoutError, OSError):
+            pass
+        if record and record.get("status") == "done":
+            break
+        time.sleep(2)
+
+    if not record or record.get("status") != "done":
+        print("Still investigating (the user is watching it live). "
+              "Keep waiting with: report-bug --wait %s" % iid)
+        return 3
+
+    verdict = record.get("verdict")
+    print()
+    print("Status:  %s" % record.get("status"))
+    print("Verdict: %s" % verdict)
+    print("Duration: %s" % fmt_duration(record))
+    esc = record.get("escalation") or {}
+    if esc:
+        fixer = esc.get("fixer") or {}
+        if esc.get("state") == "done":
+            print("Escalated: the fixer said %s, so Claude took over; the verdict above is Claude's."
+                  % fixer.get("verdict"))
+        else:
+            print("Escalated to Claude, who did not finish (%s): the verdict above is the fixer's."
+                  % esc.get("state"))
+    if verdict == "cancelled":
+        print("The user cancelled the fixer. Carry on without its help.")
+    print()
+    print("Summary:\n  %s" % (record.get("summary") or "—").replace("\n", "\n  "))
+    if record.get("root_cause"):
+        print("\nRoot cause:\n  %s" %
+              str(record["root_cause"]).replace("\n", "\n  "))
+    changed = record.get("changed") or []
+    if changed:
+        print("\nChanged:")
+        for c in changed:
+            print("  - %s: %s" % (c.get("path"), c.get("why")))
+    else:
+        print("\nChanged: (none)")
+    if record.get("tests"):
+        print("\nTests: %s" % record["tests"])
+    if record.get("restart"):
+        print("\nServices restarted: %s" % ", ".join(record["restart"]))
+    if record.get("for_the_chat"):
+        print("\nWhat the chat should do next:\n  %s" %
+              str(record["for_the_chat"]).replace("\n", "\n  "))
+
+    return 0 if verdict in ("fixed", "not_a_bug") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

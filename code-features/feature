@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""feature: the coding agent's helper inside a feature chat.
+
+Finds the feature workspace by walking up from the current directory looking
+for a .feature.json file, then talks to the code-features service to show the
+status, the pending diff, run the test suites, or mark the feature ready.
+Standard library only.
+"""
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def eprint(*args):
+    print(*args, file=sys.stderr)
+
+
+def _read_env_file(path):
+    data = {}
+    if os.path.exists(path):
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                data[k.strip()] = v.strip()
+    return data
+
+
+def _resolve(key, envfile):
+    """The environment wins; else the env file (None if neither has it)."""
+    v = os.environ.get(key)
+    if v is None:
+        v = envfile.get(key)
+    return v
+
+
+def _find_workspace(start):
+    """Walk up from start looking for .feature.json; return the dir, or None."""
+    d = os.path.abspath(start)
+    while True:
+        candidate = os.path.join(d, ".feature.json")
+        if os.path.isfile(candidate):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def _load_components(envfile):
+    p = os.environ.get("FEATURES_COMPONENTS") or envfile.get("FEATURES_COMPONENTS") \
+        or os.path.join(SCRIPT_DIR, "components.json")
+    try:
+        with open(p) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return []
+
+
+def _find_comp(components, name):
+    for c in components:
+        if c["name"] == name:
+            return c
+    return None
+
+
+def _api(server, token, method, path, body=None):
+    url = server + path
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            try:
+                return r.status, json.loads(r.read() or b"{}")
+            except ValueError:
+                return r.status, {}
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+    except urllib.error.URLError:
+        sys.exit(3)
+    except OSError:
+        sys.exit(3)
+
+
+def _last_nonempty(out):
+    for line in reversed((out or "").splitlines()):
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _feature(server, token, n):
+    code, obj = _api(server, token, "GET", "/api/features/%d" % n)
+    if code != 200:
+        eprint("error:", obj.get("error", "unknown"))
+        sys.exit(1)
+    return obj["feature"]
+
+
+def _projects_root(workspace):
+    # workspace = <projects>/features/<chat id>; the main checkout is
+    # <projects>/<name>.
+    return os.path.dirname(os.path.dirname(workspace))
+
+
+def _run_tests(server, token, workspace, n, components, names):
+    """Run each named component's suite; return (all_ok, results dict)."""
+    projects = _projects_root(workspace)
+    results = {}
+    all_ok = True
+    for name in names:
+        comp = _find_comp(components, name)
+        if comp is None:
+            eprint("unknown component: %s" % name)
+            sys.exit(2)
+        venv = os.path.join(projects, name, ".venv")
+        cmd = [c.replace("{venv}", venv) for c in comp["test"]]
+        print("=== %s ===" % name)
+        try:
+            p = subprocess.run(cmd, cwd=os.path.join(workspace, name),
+                               timeout=480, capture_output=True, text=True)
+        except subprocess.TimeoutExpired:
+            p = None
+        if p is None:
+            print("TIMEOUT after 480s")
+            results[name] = {"ok": False, "summary": "test timed out"}
+            print("FAIL %s" % name)
+            all_ok = False
+            continue
+        out = (p.stdout or "") + (p.stderr or "")
+        lines = out.splitlines()
+        print("\n".join(lines[-40:]) if lines else "")
+        ok = p.returncode == 0
+        results[name] = {"ok": ok, "summary": _last_nonempty(out)}
+        print(("PASS %s" % name) if ok else "FAIL %s" % name)
+        if not ok:
+            all_ok = False
+    _api(server, token, "POST", "/api/features/%d/tests" % n, results)
+    return all_ok, results
+
+
+def _status(server, token, workspace, n):
+    f = _feature(server, token, n)
+    title = ('"%s"' % f["title"]) if f["title"] else "(untitled)"
+    print("Feature #%d  %s  %s" % (f["n"], f["status"].upper(), title))
+    for c in f["components"]:
+        print("  [%s] %s: %d ahead of %s"
+              % (c["name"], c["label"], c["ahead"], c["ahead"] and "main"))
+        for cm in c["commits"]:
+            print("      %s %s" % (cm["short"], cm["subject"]))
+        if c["dirty"]:
+            print("      uncommitted: " + ", ".join(c["dirty"]))
+        t = c.get("tests")
+        if t:
+            print("      last test: %s (%s)"
+                  % ("PASS" if t.get("ok") else "FAIL", t.get("summary", "")))
+    if f.get("blocked"):
+        print("blocked: " + f["blocked"])
+    print("deployed" if f["status"] == "deployed" else "not deployed (nothing is live)")
+    return 0
+
+
+def _diff(server, token, n):
+    url = "/api/features/%d/diff" % n
+    code, obj = _api(server, token, "GET", url)
+    if code != 200:
+        eprint("error:", obj.get("error", "unknown"))
+        sys.exit(1)
+    files = obj["files"]
+    total_a = total_d = 0
+    for fobj in files:
+        total_a += fobj["additions"]
+        total_d += fobj["deletions"]
+        print("%-48s | +%d -%d" % (fobj["file"][:48], fobj["additions"],
+                                    fobj["deletions"]))
+    if not files:
+        print("(no changes)")
+    for fobj in files:
+        if fobj.get("patch"):
+            print()
+            print(fobj["patch"])
+    return 0
+
+
+def _test_cmd(server, token, workspace, n, argv, components):
+    f = _feature(server, token, n)
+    wanted = argv[2:]
+    if wanted:
+        for w in wanted:
+            if _find_comp(components, w) is None:
+                eprint("unknown component: %s" % w)
+                return 2
+        names = wanted
+    else:
+        names = [c["name"] for c in f["components"] if c["ahead"] > 0 or c["dirty"]]
+    if not names:
+        print("No components have commits or uncommitted changes on the branch; "
+              "nothing to test.")
+        return 0
+    all_ok, _ = _run_tests(server, token, workspace, n, components, names)
+    return 0 if all_ok else 1
+
+
+def _ready_cmd(server, token, workspace, n, argv, components):
+    if len(argv) < 4:
+        eprint('usage: feature ready "TITLE" "SUMMARY"')
+        return 2
+    title, summary = argv[2], argv[3]
+    if not (1 <= len(title) <= 120):
+        eprint("title must be 1-120 characters")
+        return 2
+    if len(summary) > 4000:
+        eprint("summary must be at most 4000 characters")
+        return 2
+    f = _feature(server, token, n)
+    problems = []
+    dirty = [c for c in f["components"] if c["dirty"]]
+    if dirty:
+        problems.append("uncommitted changes:")
+        for c in dirty:
+            problems.append("  %s: %s" % (c["label"], ", ".join(c["dirty"])))
+    ahead_total = sum(c["ahead"] for c in f["components"])
+    if ahead_total == 0:
+        problems.append("nothing is committed on the branch")
+    if problems:
+        eprint("Cannot mark the feature ready:")
+        eprint("\n".join(problems))
+        return 1
+    all_ok, _ = _run_tests(server, token, workspace, n, components,
+                           [c["name"] for c in f["components"]])
+    if not all_ok:
+        eprint("Fix the failing tests before marking the feature ready.")
+        return 1
+    code, obj = _api(server, token, "POST", "/api/features/%d/ready" % n,
+                     {"title": title, "summary": summary})
+    if code != 200:
+        eprint("error:", obj.get("error", "unknown"))
+        return 1
+    print('Feature #%d is ready: "%s". Nothing is live yet: the user deploys it '
+          'from the Features panel.' % (n, title))
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2:
+        eprint("usage: feature <status|diff|test [components...]|ready \"T\" \"S\">")
+        return 2
+    cmd = argv[1]
+    envfile = _read_env_file(os.environ.get("FEATURES_ENV_FILE") or "/etc/code-mode/features.env")
+    port = _resolve("FEATURES_PORT", envfile) or "4100"
+    token = _resolve("FEATURES_TOKEN", envfile) or ""
+    server = "http://127.0.0.1:%s" % port
+
+    workspace = _find_workspace(os.getcwd())
+    if workspace is None:
+        projects = os.environ.get("FEATURES_PROJECTS") or "/home/coder/projects"
+        print("Not in a feature workspace (%s/features/<chat id>/...)." % projects)
+        return 2
+
+    with open(os.path.join(workspace, ".feature.json")) as fh:
+        featjson = json.load(fh)
+    n = featjson["n"]
+    components = _load_components(envfile)
+
+    if cmd == "status":
+        return _status(server, token, workspace, n)
+    if cmd == "diff":
+        return _diff(server, token, n)
+    if cmd == "test":
+        return _test_cmd(server, token, workspace, n, argv, components)
+    if cmd == "ready":
+        return _ready_cmd(server, token, workspace, n, argv, components)
+    eprint("unknown command: %s" % cmd)
+    eprint("usage: feature <status|diff|test [components...]|ready \"T\" \"S\">")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,0 +1,18 @@
+[Unit]
+Description=code-claude: hands bug reports the Code mode fixer gave up on to Claude Code
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=owui
+Environment=HOME=/home/owui
+Environment=PATH=/home/owui/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/owui/code-claude
+ExecStart=/usr/bin/python3 /home/owui/code-claude/runner.py
+Restart=always
+RestartSec=10
+# Claude runs as owui in the same cgroup: stopping the service stops a run with it.
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+<!doctype html>
+<html><head>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="/theme.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+.hero { colr: red; padding: var(--gap-lg); }
+</style>
+</head><body>
+<canvas id="kp"></canvas><div id="list"></div><div id="list"></div>
+<button onclick="refreshAll()">Refresh</button>
+<button onclick="save()">Save</button>
+<img src="logo.png">
+<script src="app.jss"></script>
+<script src="app.js"></script>
+<script>
+  const total = 5;
+  total = 6;
+  function draw() { const chartHeight = 300; grid(); }
+  function grid() { ctx.fillRect(0, 0, 10, chartHeight); }
+  const ctx = document.getElementById("kpp").getContext("2d");
+  document.getElementByID("list");
+  new Chart(ctx, {});
+  fetch("/api/data").then(r => r.json());
+  if (x === ) {}
+</script>
+<script type="module">
+  function save() {}
+</script>
+</body></html>

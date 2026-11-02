@@ -1,0 +1,14 @@
+[Unit]
+Description=Fence for Code mode build jobs (uid codebuild: internet only, no LAN)
+After=network-pre.target firewalld.service
+Before=slurmd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/codebuild/fence.nft
+ExecReload=/usr/sbin/nft -f /etc/codebuild/fence.nft
+ExecStop=/usr/sbin/nft delete table inet codebuild_fence
+
+[Install]
+WantedBy=multi-user.target

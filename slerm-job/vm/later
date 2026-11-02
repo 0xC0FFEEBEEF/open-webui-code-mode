@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""later - wait for something and come back to this chat, even after your turn has ended.
+
+    later run [--label TEXT] [--note TEXT] -- COMMAND...   run COMMAND in the background (here, as you); this chat is
+                                                           woken with its exit code and output tail when it exits
+    later in DURATION [NOTE...]                            wake this chat after DURATION (90s, 20m, 2h, 1h30m)
+    later until [--every 60s] [--for 1h] 'CHECK' [NOTE...] re-run CHECK every --every until it exits 0, then wake
+                                                           this chat (or when --for runs out)
+    later list                                             what this chat is waiting for
+    later cancel ID | --all | --tag TAG
+
+The wake-up arrives as the next message in this chat (marked as sent by `later`), on the same model, once no turn is
+running. After setting one, finish your turn: say what you are waiting for and stop. Do not poll or sleep.
+Limits: 5 waiting per chat, 30 per day, 24 h at most. Cluster builds: `slerm-job run --later ...` does this for you.
+Source: ~/slerm-codebuild/vm/later on Ghost (2026-10-20).
+"""
+import argparse, json, os, re, shlex, sys, urllib.error, urllib.request
+
+URL = "http://127.0.0.1:4101"
+ENV = "/etc/code-mode/later.env"
+
+
+def token():
+    try:
+        for line in open(ENV):
+            if line.startswith("LATER_TOKEN="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    sys.exit("later: cannot read %s" % ENV)
+
+
+def call(method, path, body=None):
+    req = urllib.request.Request(URL + path, method=method, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": "Bearer " + token(), "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.load(e).get("error")
+        except ValueError:
+            msg = str(e)
+        sys.exit("later: " + msg)
+    except OSError as e:
+        sys.exit("later: the code-later service is not answering (%s)" % e)
+
+
+def seconds(s):
+    parts = re.findall(r"(\d+(?:\.\d+)?)\s*([smhd]?)", s.strip().lower())
+    if not parts or re.sub(r"[\d.\ssmhd]", "", s.lower()):
+        raise argparse.ArgumentTypeError("durations look like 90s, 20m, 2h or 1h30m")
+    return int(sum(float(v) * {"": 60, "s": 1, "m": 60, "h": 3600, "d": 86400}[u] for v, u in parts))
+
+
+def chat_here():
+    m = re.match(r"^/home/coder/projects/(?:chats|features)/([^/]+)", os.path.realpath(os.getcwd()))
+    return m.group(1) if m else None
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="later", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="op", required=True)
+    r = sub.add_parser("run")
+    r.add_argument("--label", default="")
+    r.add_argument("--note", default="")
+    r.add_argument("--tag", default="")
+    r.add_argument("command", nargs=argparse.REMAINDER)
+    i = sub.add_parser("in")
+    i.add_argument("duration", type=seconds)
+    i.add_argument("note", nargs="*")
+    u = sub.add_parser("until")
+    u.add_argument("--every", type=seconds, default=60)
+    u.add_argument("--for", dest="for_", type=seconds, default=3600)
+    u.add_argument("check")
+    u.add_argument("note", nargs="*")
+    sub.add_parser("list")
+    c = sub.add_parser("cancel")
+    c.add_argument("id", nargs="?")
+    c.add_argument("--all", action="store_true")
+    c.add_argument("--tag", default="")
+    c.add_argument("--quiet", action="store_true")
+    a = ap.parse_args()
+    cwd = os.getcwd()
+
+    if a.op == "run":
+        cmd = a.command[1:] if a.command[:1] == ["--"] else a.command
+        if not cmd:
+            sys.exit("later: give the command after --, e.g. later run -- npm run build")
+        command = cmd[0] if len(cmd) == 1 else shlex.join(cmd)
+        it = call("POST", "/api/items", {"kind": "run", "cwd": cwd, "cmd": command, "label": a.label,
+                                         "note": a.note, "tag": a.tag})["item"]
+        print("Set (%s): `%s` is running in the background. This chat will be woken with its exit code and output "
+              "when it exits. End your turn now (say what you are waiting for); do not poll it." %
+              (it["id"], (a.label or command)[:120]))
+    elif a.op == "in":
+        it = call("POST", "/api/items", {"kind": "in", "cwd": cwd, "seconds": a.duration,
+                                         "note": " ".join(a.note)})["item"]
+        print("Set (%s): this chat will be woken in %s. End your turn now." % (it["id"], fmt(a.duration)))
+    elif a.op == "until":
+        it = call("POST", "/api/items", {"kind": "until", "cwd": cwd, "cmd": a.check, "every": a.every,
+                                         "for": a.for_, "note": " ".join(a.note)})["item"]
+        print("Set (%s): `%s` will be checked every %s for up to %s; this chat is woken when it succeeds or time "
+              "runs out. End your turn now." % (it["id"], a.check[:120], fmt(a.every), fmt(a.for_)))
+    elif a.op == "list":
+        chat = chat_here()
+        if not chat:
+            sys.exit("later: run this from a Code mode chat folder")
+        rows = [x for x in call("GET", "/api/items?chat=" + chat)["items"] if x["state"] in ("waiting", "ready")]
+        if not rows:
+            print("Nothing set for this chat.")
+        for x in rows:
+            what = x.get("label") or x.get("cmd") or "timer"
+            print("%s  %-7s %-6s %s%s" % (x["id"], x["state"], x["kind"], what[:100],
+                                          "  (" + x["status_note"] + ")" if x.get("status_note") else ""))
+    elif a.op == "cancel":
+        chat = chat_here()
+        if a.id:
+            n = call("POST", "/api/items/%s/cancel" % a.id, {})["cancelled"]
+        elif a.all or a.tag:
+            if not chat:
+                sys.exit("later: run this from a Code mode chat folder")
+            n = call("POST", "/api/cancel", {"chat": chat, "tag": a.tag})["cancelled"]
+        else:
+            sys.exit("later: cancel ID, --all or --tag TAG")
+        if not a.quiet:
+            print("Cancelled %d." % n)
+
+
+def fmt(sec):
+    return "%dh%02dm" % (sec // 3600, sec % 3600 // 60) if sec >= 3600 else "%dm%02ds" % (sec // 60, sec % 60) \
+        if sec >= 60 else "%ds" % sec
+
+
+if __name__ == "__main__":
+    main()
